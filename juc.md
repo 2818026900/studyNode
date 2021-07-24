@@ -1,3 +1,5 @@
+
+
 # JUC
 
 ## 进程与线程
@@ -785,3 +787,652 @@ ReentrantLock 默认不公平
 ### 本章小结
 
 ![image-20210713000241761](juc.assets/image-20210713000241761.png) ![image-20210713000521539](juc.assets/image-20210713000521539.png) 
+
+## 共享模型之内存
+
+### Java内存模型（JMM）
+
+从Java层面定义了主存，工作内存抽象概念，底层对应着CPU寄存器、缓存、硬件内存、CPU指令优化等
+
+**JMM 体现在以下几个方面**
+
+- 原子性：保证指令不会受到线程上下文切换的影响
+- 可见性：保证指令不会受 CPU 缓存的影响
+- 有序性：保证指令不会受 CPU 指令并行优化的影响
+
+### 可见性
+
+#### 退不出的循环
+
+main 线程对 run 变量的修改对于 t  线程不可见，导致了 t 线程无法停止
+
+![image-20210720082411677](juc.assets/image-20210720082411677.png) 
+
+**分析**
+
+![image-20210720082654198](juc.assets/image-20210720082654198.png) ![image-20210720083334366](juc.assets/image-20210720083334366.png) ![image-20210720083556419](juc.assets/image-20210720083556419.png) 
+
+#### 解决方法
+
+volatile（易变关键字）
+
+它可以用来修饰成员变量和静态成员变量，他可以避免线程从自己的工作缓存中查找变量的值，必须到主存中获取它的值，线程操作 volatile 变量直接操作主存
+
+#### 可见性 vs 原子性
+
+![image-20210720095138132](juc.assets/image-20210720095138132.png) ![image-20210720095220597](juc.assets/image-20210720095220597.png) 
+
+**注意**
+
+synchronized 语句块既可以保证代码块的原子性，也同时保证代码块内变量的可见性，但synchronized属于重量级操作，性能相对更低
+
+#### *<font color=" FF9D6F">设计模式-Balking</font> 
+
+![image-20210720101142572](juc.assets/image-20210720101142572.png)
+
+用来实现线程安全的单例
+
+![image-20210720152138799](juc.assets/image-20210720152138799.png) 
+
+### 有序性
+
+JVM在不影响正确性的前提下，会调整语句的执行顺序
+
+![image-20210720152622118](juc.assets/image-20210720152622118.png) 
+
+#### *<font color="#FF5151">原理——指令级并行</font>
+
+![image-20210720153201225](juc.assets/image-20210720153201225.png) ![image-20210720153521736](juc.assets/image-20210720153521736.png)
+
+![image-20210720153248068](juc.assets/image-20210720153248068.png) 
+
+### *<font color="#FF5151">原理——volatile</font>
+
+volatile 底层实现原理是内存屏障，Memory Barrier （Memory Fence）
+
+- 对volatile变量的写指令后会加入写屏障
+- 对volatile变量的读指令前会加入读屏障
+
+#### 保证可见性
+
+![image-20210720160751241](juc.assets/image-20210720160751241.png) ![image-20210720160908630](juc.assets/image-20210720160908630.png) ![image-20210720161058143](juc.assets/image-20210720161058143.png) 
+
+#### 保证有序性
+
+![image-20210722094807609](juc.assets/image-20210722094807609.png) ![image-20210722095410376](juc.assets/image-20210722095410376.png)![image-20210722095449606](juc.assets/image-20210722095449606.png)  
+
+#### double-checked locking 问题
+
+![image-20210722202625750](juc.assets/image-20210722202625750.png) 
+
+**改进**
+
+![image-20210722203150221](juc.assets/image-20210722203150221.png)![image-20210722203722843](juc.assets/image-20210722203722843.png) 
+
+发生指令重排
+
+![image-20210722212432871](juc.assets/image-20210722212432871.png) 
+
+第0行 getstatic 在 monitor 控制之外，当 t1 线程还未完全将构造方法执行完毕，t2 线程将拿到的是一个未完成初始化的单例 
+
+#### double-checked locking 解决方案
+
+增加volatile关键字阻止重排序![image-20210722214138452](juc.assets/image-20210722214138452.png) 
+
+![image-20210722220928359](juc.assets/image-20210722220928359.png) 
+
+#### happens-before
+
+happens-before 规定了对共享变量的写操作对其他线程的读操作可见，是可见性与有序性的一套规则的总结
+
+- 线程解锁 m 之前对变量的写，对于接下来对 m  加锁的其他线程对改变量的读可见
+
+  ![image-20210723083425141](juc.assets/image-20210723083425141.png) 
+
+- 线程对 volatile 变量的写，对接下来其他线程对该变量的读可见
+
+  ![image-20210723083712226](juc.assets/image-20210723083712226.png) 
+
+- 线程 start 前对变量的写，对该线程开始后对该变量的读可见
+
+  ![image-20210723084002206](juc.assets/image-20210723084002206.png) 
+
+- 线程结束前对变量的写，对其他线程得知它结束后的读可见
+
+  ![image-20210723084346264](juc.assets/image-20210723084346264.png) 
+
+- 线程 t1 打断 t2 （interrupt）前对变量的写，对于其他线程得知 t2 被打断后对变量的读可见
+
+  ![image-20210723084601289](juc.assets/image-20210723084601289.png) 
+
+- 对变量默认值（0，false，null）的写，对其他线程对该变量的读可见
+
+- 具有传递性，如果 x hb-> y 且 y hb-> z 则 x hb-> z ，配合volatile的防指令重排
+
+#### 线程单例安全实现
+
+![image-20210723093203318](juc.assets/image-20210723093203318.png)![image-20210723093237851](juc.assets/image-20210723093237851.png)  ![image-20210723093312529](juc.assets/image-20210723093312529.png)![image-20210723093358202](juc.assets/image-20210723093358202.png) ![image-20210723093433459](juc.assets/image-20210723093433459.png)  
+
+### 本章小结
+
+![image-20210723093537635](juc.assets/image-20210723093537635.png) 
+
+## 共享模型之无锁
+
+### CAS 与 volatile
+
+#### 无锁实现共享变量的保护 compareAndSet (CAS)
+
+![image-20210723212443776](juc.assets/image-20210723212443776.png) 
+
+**实现时序图**![image-20210723212756989](juc.assets/image-20210723212756989.png) 
+
+![image-20210724083716255](juc.assets/image-20210724083716255.png) 
+
+#### volatile
+
+![image-20210724084155920](juc.assets/image-20210724084155920.png) 
+
+#### 为什么无锁效率高
+
+![image-20210724084402637](juc.assets/image-20210724084402637.png) 
+
+#### CAS特点
+
+![image-20210724084757344](juc.assets/image-20210724084757344.png) 
+
+### 原子类
+
+#### 原子整数
+
+- AtomicBoolean
+- AtomicInteger
+- AtomicLong
+
+**常见API**
+
+![image-20210724155311493](juc.assets/image-20210724155311493.png) 
+
+![image-20210724155603229](juc.assets/image-20210724155603229.png) 
+
+```java
+// 获取并更新，传递参数为lambda函数，可做更多运算
+i.getAndUpdate(value -> value * 10); 
+
+// 更新并获取，传递参数为lambda函数，可做更多运算
+i.updateAndGet(value -> value / 10);
+
+// 底层实现方法 通过cas实现
+public final int updateAndGet(IntUnaryOperator updateFunction){
+    int perv, next;
+    do{
+        perv = get();
+        next = updateFunction.applyAsInt(perv);
+    }while(!compareAndSet(prev, next));
+    return next;
+}
+```
+
+#### 原子引用
+
+- AtomicReference
+- AtomicMarkableReference
+- AtomicStampedReference
+
+**AtomicReference**
+
+****
+
+```java
+class DecimalAccountCas impletemts DecimalAccount{
+    private AtomicReference<BigDecimal> balance;
+    
+    public DecimalAccountCas(BigDecimal balance){
+        this.balance = new AtomicReference<>(balance);
+    }
+    
+    @Override
+    public BigDecimal getBalance() {
+        return balance.get();
+    }
+    
+    @Override
+    public void withdraw(BigDecimal amount){
+        while(true){
+            BigDecimal prev = balance.get();
+            BigDecimal next = prev.subtract(amount); // 减去值
+            if(balance.compareAndSET(prev, next))
+                break;
+        }
+    }
+}
+
+interface DecimalAccount {
+    // 获取余额
+    BigDecimal getBalance();
+    
+    // 取款
+    void withdraw(BigDecimal amount);
+	
+    /**
+	方法内启动1000个线程，每个线程做-10的操作
+    如果初始余额为10000 那么正确的结果应当是 0
+     */
+    static void demo(DecimalAccount account){
+        List<Thread> ts = new ArrayList<>();
+        for(int i = 0; i < 1000; i++){
+            ts.add(new Thread(() -> {
+                account.withdraw(BigDecimal.TEN);
+            }));
+        }
+        ts.forEach(Thread::start);
+        ts.forEach(t -> {
+            try{
+                t.join();
+            } catch (InterruptException e){
+                e.printStackTrace();
+            }
+        });
+        System.out.println(account.getBalance());
+    }
+}
+```
+
+##### ABA问题
+
+主线程仅能判断出共享变量的值与最初值 A 是否相同，不能感知到是否有线程将值从A -> B 又从B -> A
+
+```java
+static AtomicReference<String> ref = new AtomicReference<> ("A");
+public static void main(String[] args) throws InterruptedException{
+    String prev = ref.get();
+    other();
+    sleep(1);
+    ref.compareAndSet(prev, "C");
+}
+
+private static void other(){
+    new Thread(() -> {
+        ref.compareAndSet(ref.get(), "B");
+    }, "t1").start();
+    new Thread(() -> {
+         ref.compareAndSet(ref.get(), "A");
+    }, "t2").start();
+}
+```
+
+为了解决这种问题，只需要在其中加一个版本号，可以追踪原子引用整个变化的过程
+
+**AtomicStampedReference**
+
+```java
+static AtomicStampedReference<String> ref = new AtomicStampedReference<> ("A", 0);
+public static void main(String[] args) throws InterruptedException{
+    String prev = ref.getReference(); // 获取值
+    int stamp = ref.getStamp(); // 获取版本号
+    other();
+    sleep(1);
+    ref.compareAndSet(prev, "C", stamp, stamp + 1);
+}
+
+private static void other(){
+    new Thread(() -> {
+        int stamp = ref.getStamp(); 
+        ref.compareAndSet(ref.getReference(), "B", stamp, stamp + 1);
+    }, "t1").start();
+    new Thread(() -> {
+        int stamp = ref.getStamp(); 
+         ref.compareAndSet(ref.getReference(), "A", stamp, stamp + 1);
+    }, "t2").start();
+}
+```
+
+如果并不关心修改多少次，只是单纯关系是否更改过，这时可以使用**AtomicMarkableReference** 它将版本号换为了布尔值
+
+#### 原子数组
+
+- AtomicIntegerArray
+- AtomicLongArray
+- AtomicReferenceArray
+
+```java
+public static void main(String[] args){
+    // 线程不安全
+    demo(
+    	() -> new int[10],
+        (array) -> array.length,
+        (array, index) -> array[index]++,
+        array -> System.out.println(Array.toString(array))
+    );
+    
+    // 线程安全
+    demo(
+    	() -> new AtomicIntegerArray(10),
+        (array) -> array.length,
+        (array, index) -> array.getAndIncrement(index),
+        array -> System.out.println(array)
+    );
+}
+
+/*
+方法内启动10个线程，并发让数组所有元素总共自增 10000 次
+	参数1， 提供数组、可以是线程安全的也可以是不安全的数组
+	参数2， 获取数组长度
+	参数3， 自增方法，回传array， index
+	参数4， 打印数组方法
+*/
+/*
+	supplier 提供者 无中生有 （） -> 结果
+	function 函数 一个参数一个结果 （参数）-> 结果	BiFunction(参数1， 参数2) -> 结果
+	consumer 消费者 一个参数没结果 (参数) -> void	BiConsumer(参数1，参数2) -> void
+*/
+private static <T> demo(
+    Supplier<T> arraySupplier,
+    Function<T, Integer> lengthFun,
+    BiConusumer<T, Integer> putConsumer,
+    Consumer<T> printConsumer){
+    List<Thread> ts = new ArrayList<>();
+    T array = arraySupplier.get();
+    int length = lengthFun.apply(array);
+    for(int i = 0; i < length; i++){
+        ts.add(new Thread(() -> {
+            for(int j = 0; j < 10000; j++){
+            	putConsumer.accept(array, j%length);    
+            }
+        }));
+    }
+    ts.forEach(t -> t.start());
+    ts.forEach(t -> {
+        try{
+            t.join();
+        } catch (InterruptException e){
+            e.printStackTrace();
+        }
+    });
+}
+```
+
+#### 字段更新器
+
+- AtomicIntegerFieldUpdater
+- AtomicLongFieldUpdater
+- AtomicReferenceFieldUpdater
+
+利用字段更新器可以针对对象的某个域（Field）进行原子操作，只能配合volatile修饰的字段使用，否则会出现异常
+
+```java
+Exception in thread "main" java.lang.IllegalArgumentException: Must be volatile type
+```
+
+```java
+public static void main(String[] args){
+    Student stu = new Student();
+    AtomicReferenceFieldUpdater updater = 
+    			AtomicReferenceFieldUpdater.newUpdater(Student.class, String.class, "name");
+    System.out.println(updater.compareAndSet(stu, null, "张三"));
+    System.out.println(stu);
+}
+
+@Data
+class Student{
+    String name;
+}
+```
+
+#### 原子累加器
+
+##### 累加器性能比较
+
+```java
+public static void main(String[] args){
+    for(int i = 0; i < 5; i++){
+        demo{
+            () -> new AtomicLong(0),
+            (adder) -> adder.getAndIncrement()
+        };
+    }
+    for(int i = 0; i < 5; i++){
+        demo{
+            () -> new LongAdder(),
+            (adder) -> adder.increment()
+        };
+    }
+}
+
+private static <T> void demo(Supplier<T> adderSupplier, Consumer<T> action){
+    T adder = adderSupplier.get();
+    long start = System.nanoTime();
+    List<Thread> ts = new ArrayList<>();
+    for(int i = 0; i < 40; i++){
+        ts.add(new Thread(() -> {
+            for(int j = 0; j < 500000; j++){
+                action.accept(adder);
+            }
+        }));
+    }
+    ts.froEach(t -> t.start());
+    ts.forEach(t -> {
+        try{
+            t.join();
+        } catch (InterruptException e){
+            e.printStackTrace();
+        }
+    });
+    long end = System.nanoTime();
+    System.out.println(adder + " cosst:" + (end - start)/1000_000);
+}
+```
+
+![image-20210724193153074](juc.assets/image-20210724193153074.png) 
+
+![image-20210724193242939](juc.assets/image-20210724193242939.png) 
+
+##### 源码—— LongAdder
+
+LongAdder 关键域
+
+```java
+// 累加单元数组， 懒惰初始化
+transient volatile Cell[] cells;
+
+// 基础值，如果没有竞争，则用cas累加这个域
+transient volatile long base;
+
+// 在cells创建或扩容时， 置为 1 ， 表示加锁
+transient volatile int cellsBusy;
+```
+
+**cas 实现锁**
+
+```java
+public class LockCas{
+ 	private AtomicInteger state = new AtomicInteger(0);
+    
+    public void lock(){
+        while(true){
+            if(state.compareAndSet(0, 1))
+                break;
+        }
+    }
+    
+    public void unlock(){
+        System.out.println("unlock....");
+        state.set(0);
+    }
+    
+    public static void main(String[] args){
+        LockCas lock = new LockCas();
+        new Thread(() -> {
+            System.out.println("begin....");
+            lock.lock();
+            try{
+                System.out.println("lock....");
+                sleep(1);
+            }finally{
+                lock.unlock();
+            }
+        }, "t1").start();
+        
+        new Thread(() -> {
+            System.out.println("begin....");
+            lock.lock();
+            try{
+                System.out.println("lock....");
+            }finally{
+                lock.unlock();
+            }
+        }, "t2").start();
+    }
+}
+```
+
+**cell实现**
+
+```java
+// 防止缓存行伪共享
+@sun.misc.Contended
+static final class Cell{
+    volatile long value;
+    Cell(long x){ value = x };
+    // 通过cas方式进行累加,prev表示旧值， next表示新值
+    final boolean cas(long prev, long next){
+        return UNSAFE.compareAndSwapLong(this, valueOffset, perv, next);
+    }
+}
+```
+
+![image-20210724211445214](juc.assets/image-20210724211445214.png) ![image-20210724212957555](juc.assets/image-20210724212957555.png) ![image-20210724214316573](juc.assets/image-20210724214316573.png) ![image-20210724215656844](juc.assets/image-20210724215656844.png) ![image-20210724215731580](juc.assets/image-20210724215731580.png) 
+
+**add() **
+
+```java
+public void add(long x){
+    Cell[] as;
+    long b, v;
+    int m;
+    Cell a;
+    if((as = cells) != null || !casBase(b = base, b + x)){
+        boolean uncontended = true;
+        if(as == null || (m = as.length - 1) < 0 ||
+          (a = as[getProbe() & m]) == null ||
+           !(uncontended = a.cas(v= a.value, v + x))){
+            	longAccumulate(x, null, uncontended);
+        }
+    }
+}
+```
+
+![image-20210724221758527](juc.assets/image-20210724221758527.png) 
+
+**longAccumulate() **
+
+```java
+final void longAccumulate(long x, LongBinaryOperator fn,
+                              boolean wasUncontended) {
+    int h;
+    if ((h = getProbe()) == 0) {
+        ThreadLocalRandom.current(); // force initialization
+        h = getProbe();
+        wasUncontended = true;
+    }
+    boolean collide = false;                // True if last slot nonempty
+    done: for (;;) {
+        Cell[] cs; Cell c; int n; long v;
+        if ((cs = cells) != null && (n = cs.length) > 0) {
+            if ((c = cs[(n - 1) & h]) == null) {
+                if (cellsBusy == 0) {       // Try to attach new Cell
+                    Cell r = new Cell(x);   // Optimistically create
+                    if (cellsBusy == 0 && casCellsBusy()) {
+                        try {               // Recheck under lock
+                            Cell[] rs; int m, j;
+                            if ((rs = cells) != null &&
+                                (m = rs.length) > 0 &&
+                                rs[j = (m - 1) & h] == null) {
+                                rs[j] = r;
+                                break done;
+                            }
+                        } finally {
+                            cellsBusy = 0;
+                        }
+                        continue;           // Slot is now non-empty
+                    }
+                }
+                collide = false;
+            }
+            else if (!wasUncontended)       // CAS already known to fail
+                wasUncontended = true;      // Continue after rehash
+            else if (c.cas(v = c.value,
+                           (fn == null) ? v + x : fn.applyAsLong(v, x)))
+                break;
+            else if (n >= NCPU || cells != cs)
+                collide = false;            // At max size or stale
+            else if (!collide)
+                collide = true;
+            else if (cellsBusy == 0 && casCellsBusy()) {
+                try {
+                    if (cells == cs)        // Expand table unless stale
+                        cells = Arrays.copyOf(cs, n << 1);
+                } finally {
+                    cellsBusy = 0;
+                }
+                collide = false;
+                continue;                   // Retry with expanded table
+            }
+            h = advanceProbe(h);
+        }
+        else if (cellsBusy == 0 && cells == cs && casCellsBusy()) {
+            try {                           // Initialize table
+                if (cells == cs) {
+                    Cell[] rs = new Cell[2];
+                    rs[h & 1] = new Cell(x);
+                    cells = rs;
+                    break done;
+                }
+            } finally {
+                cellsBusy = 0;
+            }
+        }
+        // Fall back on using base
+        else if (casBase(v = base,
+                         (fn == null) ? v + x : fn.applyAsLong(v, x)))
+            break done;
+    }
+}
+```
+
+![image-20210724223508661](juc.assets/image-20210724223508661.png) 
+
+![image-20210724223915179](juc.assets/image-20210724223915179.png) 
+
+![image-20210724222854372](juc.assets/image-20210724222854372.png) 
+
+**sum() **
+
+```java
+public long sum() {
+    Cell[] as = cells; Cell a;
+    long sum = base;
+    if (as != null) {
+        for (int i = 0; i < as.length; ++i) {
+            if ((a = as[i]) != null)
+                sum += a.value;
+        }
+    }
+    return sum;
+}
+```
+
+### unsafe
+
+unsafe对象提供了非常底层的操作内存、线程的方法，unsafe对象不能直接调用
+
+![image-20210724225322000](juc.assets/image-20210724225322000.png) 
+
+#### unsafe cas操作
+
+![image-20210724225838690](juc.assets/image-20210724225838690.png) 
+
+### 本章小结
+
+![image-20210724230429165](juc.assets/image-20210724230429165.png) 
+
