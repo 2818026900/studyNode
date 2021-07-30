@@ -1436,3 +1436,2984 @@ unsafe对象提供了非常底层的操作内存、线程的方法，unsafe对�
 
 ![image-20210724230429165](juc.assets/image-20210724230429165.png) 
 
+## 共享模型之不可变
+
+### 日期转换问题
+
+![image-20210726101558169](juc.assets/image-20210726101558169.png) 
+
+出现java.lang,NumberFormatException或者出现不正确的日期解析结果
+
+可以通过使用不可变对象解决这个问题
+
+```java
+public static void main(String[] args){
+    DateTimeFormatter stf = DateTimeFormatter.ofPattern("yyyy-mm-dd");
+    for(int i = 0; i < 10; i++){
+        new Thread(() -> {
+            TemporalAccessor parse = stf.parse("1951-04-21");
+        }).start();
+    }
+}
+```
+
+### 不可变类的设计
+
+设计要素
+
+**使用final**
+
+1. 属性用final修饰保证了该属性只读，不能修改、
+2. 类用final修饰保证了该类中的方法不能被覆盖，防止子类无意间破坏不可变性
+
+**保护性拷贝**
+
+String 不可变，当新赋值时
+
+```java
+public String (@NotNull char value[]){
+    this.value = Arrays.copyOf(value, value.length);
+}
+```
+
+获取其子串
+
+```java
+public String substring(int beginIndex, int endIndex) {
+    if (beginIndex < 0) {
+        throw new StringIndexOutOfBoundsException(beginIndex);
+    }
+    if (endIndex > value.length) {
+        throw new StringIndexOutOfBoundsException(endIndex);
+    }
+    int subLen = endIndex - beginIndex;
+    if (subLen < 0) {
+        throw new StringIndexOutOfBoundsException(subLen);
+    }
+    return ((beginIndex == 0) && (endIndex == value.length)) ? this
+        : new String(value, beginIndex, subLen);
+}
+
+public String(char value[], int offset, int count) {
+    if (offset < 0) {
+        throw new StringIndexOutOfBoundsException(offset);
+    }
+    if (count <= 0) {
+        if (count < 0) {
+            throw new StringIndexOutOfBoundsException(count);
+        }
+        if (offset <= value.length) {
+            this.value = "".value;
+            return;
+        }
+    }
+    // Note: offset or count might be near -1>>>1.
+    if (offset > value.length - count) {
+        throw new StringIndexOutOfBoundsException(offset + count);
+    }
+    this.value = Arrays.copyOfRange(value, offset, offset+count);
+}
+```
+
+这种通过创建副本来避免共享的手段称之为【保护性拷贝】
+
+#### *<font color=" FF9D6F">设计模式-享元模式</font> 
+
+##### 定义
+
+Flyweight pattern 当需要重用数量有限的同一类对象时 属于Structual patterns
+
+##### 体现
+
+###### 包装类
+
+**valueOf()**
+
+Byte、Short、Long 
+
+```java
+// byte
+public static Byte valueOf(byte b) {
+    final int offset = 128;
+    return ByteCache.cache[(int)b + offset];
+}
+
+// short
+public static Short valueOf(short s) {
+    final int offset = 128;
+    int sAsInt = s;
+    if (sAsInt >= -128 && sAsInt <= 127) { // must cache
+        return ShortCache.cache[sAsInt + offset];
+    }
+    return new Short(s);
+}
+
+// long
+public static Long valueOf(long l) {
+    final int offset = 128;
+    if (l >= -128 && l <= 127) { // will cache
+        return LongCache.cache[(int)l + offset];
+    }
+    return new Long(l);
+}
+```
+
+Character 
+
+```java
+public static Character valueOf(char c) {
+    if (c <= 127) { // must cache
+        return CharacterCache.cache[(int)c];
+    }
+    return new Character(c);
+}
+```
+
+Integer
+
+```java
+public static Integer valueOf(int i) {
+    if (i >= IntegerCache.low && i <= IntegerCache.high)
+        return IntegerCache.cache[i + (-IntegerCache.low)];
+    return new Integer(i);
+}
+```
+
+Boolean 
+
+```java
+public static Boolean valueOf(boolean b) {
+    return (b ? TRUE : FALSE);
+}
+```
+
+
+
+**缓存大小**
+
+Byte、Short、Long 
+
+```java
+// byte
+private static class ByteCache {
+    private ByteCache(){}
+
+    static final Byte cache[] = new Byte[-(-128) + 127 + 1];
+
+    static {
+        for(int i = 0; i < cache.length; i++)
+            cache[i] = new Byte((byte)(i - 128));
+    }
+}
+
+// short
+private static class ShortCache {
+    private ShortCache(){}
+
+    static final Short cache[] = new Short[-(-128) + 127 + 1];
+
+    static {
+        for(int i = 0; i < cache.length; i++)
+            cache[i] = new Short((short)(i - 128));
+    }
+}
+
+// long
+private static class LongCache {
+    private LongCache(){}
+
+    static final Long cache[] = new Long[-(-128) + 127 + 1];
+
+    static {
+        for(int i = 0; i < cache.length; i++)
+            cache[i] = new Long(i - 128);
+    }
+}
+```
+
+Character 
+
+```java
+private static class CharacterCache {
+    private CharacterCache(){}
+
+    static final Character cache[] = new Character[127 + 1];
+
+    static {
+        for (int i = 0; i < cache.length; i++)
+            cache[i] = new Character((char)i);
+    }
+}
+```
+
+Integer
+
+```java
+private static class IntegerCache {
+    static final int low = -128;
+    static final int high;
+    static final Integer cache[];
+
+    static {
+        // high value may be configured by property
+        int h = 127;
+        String integerCacheHighPropValue =
+            sun.misc.VM.getSavedProperty("java.lang.Integer.IntegerCache.high");
+        if (integerCacheHighPropValue != null) {
+            try {
+                int i = parseInt(integerCacheHighPropValue);
+                i = Math.max(i, 127);
+                // Maximum array size is Integer.MAX_VALUE
+                h = Math.min(i, Integer.MAX_VALUE - (-low) -1);
+            } catch( NumberFormatException nfe) {
+                // If the property cannot be parsed into an int, ignore it.
+            }
+        }
+        high = h;
+
+        cache = new Integer[(high - low) + 1];
+        int j = low;
+        for(int k = 0; k < cache.length; k++)
+            cache[k] = new Integer(j++);
+
+        // range [-128, 127] must be interned (JLS7 5.1.7)
+        assert IntegerCache.high >= 127;
+    }
+
+    private IntegerCache() {}
+}
+```
+
+Boolean 
+
+```java
+public static Boolean valueOf(boolean b) {
+    return (b ? TRUE : FALSE);
+}
+```
+
+**结论**
+
+Byte,Short,Long 缓存范围 -128 ~ 127
+
+Character 缓存范围是 0 ~ 127
+
+Integer 默认范围是 -128 ~127， 最小值不能变，最大值可以通过调整虚拟机参数 -Djava.lang.IntergerCache.high 改变
+
+Boolean 缓存了 TRUE 和 FALSE
+
+###### String串池
+
+###### BigDecimal BigInteger
+
+##### 自定义连接池体现享元模式
+
+```java
+class Pool {
+    // 1.连接池大小
+    private final int poolSize;
+
+    // 2.连接对象数组
+    private Connection[] connections;
+
+    // 3.连接状态数组 0 表示空闲 1 表示繁忙
+    // private int[] states; // 数组线程不安全
+    private AtomicIntegerArray states;
+
+    // 4.构造方法初始化
+    public Pool(int poolSize) {
+        this.poolSize = poolSize;
+        this.connections = new Connection[poolSize];
+        this.states = new AtomicIntegerArray(new int[poolSize]);
+        for (int i = 0; i < poolSize; i++) {
+            connections[i] = new MockConnection();
+        }
+    }
+
+    // 5.借连接
+    public Connection borrow(){
+        while (true){
+            for (int i = 0; i < poolSize; i++) {
+                // 获取空闲连接
+                if (states.get(i) == 0) {
+                    if (states.compareAndSet(i, 0, 1)) {
+                        return connections[i];
+                    }
+                }
+            }
+            // 如果没有空闲连接,当前线程进入等待
+            synchronized (this){
+                try {
+                    this.wait();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    // 6.归还连接
+    public void free(Connection connection){
+        for (int i = 0; i < poolSize; i++) {
+            if (connections[i] == connection){
+                states.set(i, 0);
+                synchronized (this){
+                    this.notifyAll();
+                }
+                break;
+            }
+        }
+    }
+}
+```
+
+#### *<font color="#FF5151">原理——final</font>
+
+**设置 final 变量的原理**
+
+![image-20210726171328692](juc.assets/image-20210726171328692.png) 
+
+### 无状态
+
+![image-20210726172044224](juc.assets/image-20210726172044224.png) 
+
+### 本章小结
+
+![image-20210726172128006](juc.assets/image-20210726172128006.png) 
+
+## 共享模型之并发工具
+
+### 线程池
+
+#### 自定义线程池
+
+![image-20210726190043056](juc.assets/image-20210726190043056.png) 
+
+*拒绝策略*
+
+```java
+// 拒绝策略
+@FunctionalInterface
+interface RejectPolicy<T> {
+    void reject(BlockingQueue<T> queue, T task);
+}
+```
+
+
+
+*线程池*
+
+```java
+// 线程池
+class ThreadPool {
+    // 任务队列
+    private BlockingQueue<Runnable> taskQueue;
+
+    // 线程集合
+    private HashSet<Worker> workers = new HashSet();
+
+    // 核心线程数
+    private int coreSize;
+
+    // 获取任务超时时间
+    private long timeout;
+    private TimeUnit timeUnit;
+
+    // 执行任务
+    public void execute(Runnable task){
+        synchronized (workers){
+            // 当任务数没有超过 coreSize 时， 交给 worker执行
+            if (workers.size() < coreSize){
+                Worker worker = new Worker(task);
+                workers.add(worker);
+                worker.start();
+            } else {
+               // 任务数超过 coreSize 时，加入任务队列
+                // taskQueue.put(task); // 1.死等
+                // taskQueue.offer(task, 500, TimeUnit.MILLISECONDS); // 2.带超时等待
+                // System.out.println("放弃"); // 3.让调用者放弃任务执行
+                // throw new RuntimeException("任务执行失败 " + task); // 4.让调用者抛出异常
+                // task.run(); // 5.让调用者自己执行任务
+                taskQueue.tryPut(rejectPolicy, task);
+            }
+        }
+    }
+
+    public ThreadPool(int coreSize, long timeout, TimeUnit timeUnit, int queueCapcity) {
+        this.coreSize = coreSize;
+        this.timeout = timeout;
+        this.timeUnit = timeUnit;
+        this.taskQueue = new BlockingQueue<>(queueCapcity);
+    }
+
+    class Worker extends Thread{
+        private Runnable task;
+
+        public Worker(Runnable task) {
+            this.task = task;
+        }
+
+        public void run(){
+            // 执行任务
+            // 当 task 不为空,执行任务
+            // 当 task 执行完毕获取任务队列中任务
+            while (task != null || (task = taskQueue.pool(timeout, timeUnit)) != null){
+                try {
+                    task.run();
+                } catch (Exception e){
+                   e.printStackTrace();
+                } finally {
+                    task = null;
+                }
+            }
+            synchronized (workers){
+                workers.remove(this);
+            }
+        }
+    }
+}
+```
+
+*阻塞队列*
+
+```java
+// 阻塞队列
+class BlockingQueue<T> {
+    // 1.任务队列
+    private Deque<T> queue = new ArrayDeque<>();
+
+    // 2.锁
+    private ReentrantLock lock = new ReentrantLock();
+
+    // 3.生产者条件变量，消费者条件变量
+    private Condition fullWaitSet = lock.newCondition();
+    private Condition emptyWaitSet = lock.newCondition();
+
+    // 4。容量上限
+    private int capaity;
+
+    public BlockingQueue(int capaity) {
+        this.capaity = capaity;
+    }
+
+    // 超时阻塞获取
+    public T pool(long Timeout, TimeUnit unit) {
+        lock.lock();
+        try{
+            long nanos = unit.toNanos(Timeout);
+            while (queue.isEmpty()){
+                if (nanos <= 0){
+                    return null;
+                }
+                try {
+                    nanos = emptyWaitSet.awaitNanos(nanos);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            T t = queue.removeFirst();
+            fullWaitSet.signal();
+            return t;
+        }  finally {
+            lock.unlock();
+        }
+    }
+
+    // 阻塞获取
+    public T take() {
+        lock.lock();
+        try{
+            while (queue.isEmpty()){
+                try {
+                    emptyWaitSet.await();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            T t = queue.removeFirst();
+            fullWaitSet.signal();
+            return t;
+        }  finally {
+            lock.unlock();
+        }
+    }
+
+    // 带超时时间的阻塞添加
+    public boolean offer(T task, long Timeout, TimeUnit timeUnit) {
+        lock.lock();
+        try{
+            long nanos = timeUnit.toNanos(Timeout);
+            while (queue.size() == capaity){
+                if (nanos <= 0)
+                    return false;
+                try {
+                    fullWaitSet.awaitNanos(nanos);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            queue.addLast(task);
+            emptyWaitSet.signal();
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+    
+    // 阻塞添加
+    public void put(T element){
+        lock.lock();
+        try{
+            while (queue.size() == capaity){
+                fullWaitSet.await();
+            }
+            queue.addLast(element);
+            emptyWaitSet.signal();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    // 获取大小
+    public int size(){
+        lock.lock();
+        try {
+            return queue.size();
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+```
+
+#### JDK中线程池实现
+
+##### ThreadPoolExecutor
+
+![image-20210726223159488](juc.assets/image-20210726223159488.png) 
+
+###### 线程池状态
+
+![image-20210726223558472](juc.assets/image-20210726223558472.png) 
+
+![image-20210727085439254](juc.assets/image-20210727085439254.png) 
+
+###### 构造方法
+
+```java
+public ThreadPoolExecutor(int corePoolSize, // 核心线程数
+                          int maximumPoolSize, // 最大线程数目
+                          long keepAliveTime, // 生存时间 - 针对救急线程
+                          TimeUnit unit, // 时间单位 - 针对救急线程
+                          BlockingQueue<Runnable> workQueue, // 阻塞队列
+                          ThreadFactory threadFactory, // 线程工厂，为线程起名
+                          RejectedExecutionHandler handler) { // 拒绝策略
+    if (corePoolSize < 0 ||
+        maximumPoolSize <= 0 ||
+        maximumPoolSize < corePoolSize ||
+        keepAliveTime < 0)
+        throw new IllegalArgumentException();
+    if (workQueue == null || threadFactory == null || handler == null)
+        throw new NullPointerException();
+    this.acc = System.getSecurityManager() == null ?
+        null :
+    AccessController.getContext();
+    this.corePoolSize = corePoolSize;
+    this.maximumPoolSize = maximumPoolSize;
+    this.workQueue = workQueue;
+    this.keepAliveTime = unit.toNanos(keepAliveTime);
+    this.threadFactory = threadFactory;
+    this.handler = handler;
+}
+```
+
+**工作方式**
+
+1.线程池创建核心线程数2个，总线程数3个（核心线程数+救急线程数）
+
+```mermaid
+graph LR
+
+subgraph 阻塞队列
+size=2
+end
+
+subgraph 线程池c=2,m=3
+ct1(核心线程1)
+ct2(核心线程2)
+mt1(救急线程1)
+end
+
+style ct1 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+style ct2 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+style mt1 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+```
+
+2.出现任务1
+
+```mermaid
+graph LR
+
+subgraph 阻塞队列
+size=2
+end
+
+subgraph 线程池c=2,m=3
+ct1(核心线程1)
+ct2(核心线程2)
+mt1(救急线程1)
+end
+t1(任务1)
+
+style ct1 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+style ct2 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+style mt1 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+```
+
+3.将任务1交由核心线程1处理执行
+
+```mermaid
+graph LR
+
+subgraph 阻塞队列
+size=2
+end
+
+subgraph 线程池c=2,m=3
+ct1(核心线程1)
+ct2(核心线程2)
+mt1(救急线程1)
+ct1 --> t1(任务1)
+end
+
+style ct1 fill:#ccf, stroke:#f66, storke-width:2px
+style ct2 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+style mt1 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+```
+
+4.将任务2交由核心线程2处理
+
+```mermaid
+graph LR
+
+subgraph 阻塞队列
+size=2
+end
+
+subgraph 线程池c=2,m=3
+ct1(核心线程1)
+ct2(核心线程2)
+mt1(救急线程1)
+ct1 --> t1(任务1)
+ct2 --> t2(任务2)
+end
+
+style ct1 fill:#ccf, stroke:#f66, storke-width:2px
+style ct2 fill:#ccf, stroke:#f66, storke-width:2px
+style mt1 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+```
+
+5.当核心线程全部创建满，再出现任务则加入阻塞队列
+
+```mermaid
+graph LR
+
+subgraph 阻塞队列
+size=2
+t3(任务3)
+t4(任务4)
+end
+
+subgraph 线程池c=2,m=3
+ct1(核心线程1)
+ct2(核心线程2)
+mt1(救急线程1)
+ct1 --> t1(任务1)
+ct2 --> t2(任务2)
+end
+
+style ct1 fill:#ccf, stroke:#f66, storke-width:2px
+style ct2 fill:#ccf, stroke:#f66, storke-width:2px
+style mt1 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+```
+
+6.阻塞队列放不下创建救急线程，该线程具有生存时间
+
+```mermaid
+graph LR
+
+subgraph 阻塞队列
+size=2
+t3(任务3)
+t4(任务4)
+end
+
+subgraph 线程池c=2,m=3
+ct1(核心线程1)
+ct2(核心线程2)
+mt1(救急线程1)
+ct1 --> t1(任务1)
+ct2 --> t2(任务2)
+mt1 --> t5(任务5)
+end
+
+style ct1 fill:#ccf, stroke:#f66, storke-width:2px
+style ct2 fill:#ccf, stroke:#f66, storke-width:2px
+style mt1 fill:#ccf, stroke:#f66, storke-width:2px
+```
+
+7.当救急线程创建后还不足以支持线程使用，则使用拒绝策略，任务5执行完毕
+
+```mermaid
+graph LR
+
+subgraph 阻塞队列
+size=2
+t3(任务3)
+t4(任务4)
+end
+
+subgraph 线程池c=2,m=3
+ct1(核心线程1)
+ct2(核心线程2)
+mt1(救急线程1)
+ct1 --> t1(任务1)
+ct2 --> t2(任务2)
+end
+
+style ct1 fill:#ccf, stroke:#f66, storke-width:2px
+style ct2 fill:#ccf, stroke:#f66, storke-width:2px
+style mt1 fill:#ccf, stroke:#f66, storke-width:2px, stroke-dasharray: 5, 5
+```
+
+###### newFixedThreadPool(固定大小线程池)
+
+```java
+public static ExecutorService newFixedThreadPool(int nThreads) {
+    return new ThreadPoolExecutor(nThreads, nThreads,
+                                  0L, TimeUnit.MILLISECONDS,
+                                  new LinkedBlockingQueue<Runnable>());
+}
+```
+
+**特点**
+
+- 核心线程数 == 最大线程数（没有救急线程被创建），因此无需超时时间
+- 阻塞队列是无界的，可以放任意数量的任务
+- 适用于任务量已知，相对耗时的任务
+
+###### newCachedThreadPool(带缓冲线程池)
+
+```java
+public static ExecutorService newCachedThreadPool() {
+    return new ThreadPoolExecutor(0, Integer.MAX_VALUE,
+                                  60L, TimeUnit.SECONDS,
+                                  new SynchronousQueue<Runnable>());
+}
+```
+
+**特点**
+
+- 核心线程数是0， 最大线程数是 Integer.MAX_VALUE ，救急线程空闲生存时间是 60s, 意味着
+  - 全部都是救急线程
+  - 救急线程可以无限创建
+- 队列采用了 SynchronousQueue 实现特点是，它没有容量，没有线程来取放不进去
+- 整个线程池表现为线程数会根据任务量不断增长，没有上限，当任务执行完毕，空闲1分钟后释放线程
+- 适合任务数比较密集但每个任务执行时间比较短的情况
+
+###### newSingleThreadExecutor(单线程)
+
+```java
+public static ExecutorService newSingleThreadExecutor() {
+    return new FinalizableDelegatedExecutorService
+        (new ThreadPoolExecutor(1, 1,
+                                0L, TimeUnit.MILLISECONDS,
+                                new LinkedBlockingQueue<Runnable>()));
+}
+```
+
+希望多个任务排队执行，线程数固定为1，任务数多于1时，放入无界队列排队。任务执行完毕，这个线程也不会被释放
+
+**自己创建一个线程与线程池区别**
+
+- 自己创建一个单线程串行执行任务，如果任务执行失败而终止那么没有任何补救措施，而线程池还会新建一个线程，保证线程池正常工作
+- Executors.newSingleThreadExecutor() 线程个数始终为 1，不能修改
+  - FinalizableDelegatedExecutorSerivice 应用的是装饰器模式，只对外暴露了 ExecutorService 接口，因此不能调用 ThreadPoolExecutor 中特有的方法
+- Executors.newFixedThreadPool(1) 初始时为1，以后还可以修改
+  - 对外暴露的是 ThreadPoolExecutor 对象，可以强转后调用 setCorePoolSize 等方法进行修改
+
+###### 提交任务
+
+```java
+// 执行任务
+void execute(Runnable command);
+
+// 提交任务 task，用返回值 Future 获得任务执行结果
+<T> Future<T> submit(Callable<T> task);
+
+// 提交 tasks 中所有任务
+<T> List<Future<T>> invokeAll(Collection<? extends  Callable<T>> tasks,
+                              long timeout, TimeUnit unit) 
+    throws InterruptedException;
+
+// 提交 tasks 中所有任务，哪个任务先成功执行完毕，返回此任务执行结果，其他任务取消
+<T> T invokeAny(Collection<? extends Callable<T>> tasks)
+    throws InterruptedException, ExecutionException;
+
+// 提交 tasks 中所有任务，哪个任务先成功执行完毕，返回此任务执行结果，其他任务取消，带超时时间
+<T> T invokeAny(Collection<? extends Callable<T>> tasks,
+                long timeout, TimeUnit unit)
+    throws InterruptedException, ExecutionException, TimeoutException;
+```
+
+###### 关闭线程池
+
+**shutdown**
+
+```java
+/*
+	将线程池状态变为SHUTDOWN（
+		不会接受新任务、
+		已提交任务继续执行完毕、
+		不会阻塞调用线程的执行）
+*/
+public void shutdown() {
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        checkShutdownAccess();
+        // 修改线程池状态
+        advanceRunState(SHUTDOWN);
+        // 仅打断空闲线程
+        interruptIdleWorkers();
+        onShutdown(); // hook for ScheduledThreadPoolExecutor
+    } finally {
+        mainLock.unlock();
+    }
+    // 尝试终结没有运行的线程
+    tryTerminate();
+}
+```
+
+**shutdowanNow**
+
+```java
+/*
+	线程池状态变为STOP（
+		不会接受新任务、
+		将队列中任务1返回、
+		用 interrupt 的方式中断正在执行的任务）
+*/
+public List<Runnable> shutdownNow() {
+    List<Runnable> tasks;
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        checkShutdownAccess();
+        // 修改线程池状态
+        advanceRunState(STOP);
+        // 打断所有线程
+        interruptWorkers();
+        // 获取队列中剩余任务
+        tasks = drainQueue();
+    } finally {
+        mainLock.unlock();
+    }
+    // 尝试终结
+    tryTerminate();
+    return tasks;
+}
+```
+
+**其它方法**
+
+```java
+// 不在 RUNNING 状态的线程池，此方法返回 true
+public boolean isShutdown() {
+    return ! isRunning(ctl.get());
+}
+
+// 线程状态是否是 TERMINATED
+public boolean isTerminated() {
+    return runStateAtLeast(ctl.get(), TERMINATED);
+}
+
+// 调用 shutdown 方法后，由于调用线程并不会等待所有任务运行结束，因此如果它想在线程池 TEMINATED 后做些事，可以利用此方法等待
+public boolean awaitTermination(long timeout, TimeUnit unit)
+    throws InterruptedException {
+    long nanos = unit.toNanos(timeout);
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        for (;;) {
+            if (runStateAtLeast(ctl.get(), TERMINATED))
+                return true;
+            if (nanos <= 0)
+                return false;
+            nanos = termination.awaitNanos(nanos);
+        }
+    } finally {
+        mainLock.unlock();
+    }
+}
+```
+
+###### 任务调度线程池
+
+![image-20210727181204892](juc.assets/image-20210727181204892.png) 
+
+**newScheduledThreadPool**
+
+```java
+/**
+ * 创建一个线程池，可以安排命令在给定延迟后运行，或定期执行。
+ * @param corePoolSize 要保留在池中的线程数，即使它们处于空闲状态
+ * @return 新创建的调度线程池
+ * @throws IllegalArgumentException if {@code corePoolSize < 0}
+ */
+public static ScheduledExecutorService newScheduledThreadPool(int corePoolSize) {
+    return new ScheduledThreadPoolExecutor(corePoolSize);
+}
+
+// 核心方法
+/*
+	执行 
+	1. 代码调用中存在异常需要自行处理
+	2. 配合Callable与Future返回结果通过get方法获取返回值并发现异常
+*/
+public ScheduledFuture<?> schedule(Runnable command,
+                                   long delay,
+                                   TimeUnit unit) {
+    if (command == null || unit == null)
+        throw new NullPointerException();
+    RunnableScheduledFuture<Void> t = decorateTask(command,
+                                                   new ScheduledFutureTask<Void>(command, null,
+                                                                                 triggerTime(delay, unit),
+                                                                                 sequencer.getAndIncrement()));
+    delayedExecute(t);
+    return t;
+}
+
+public <V> ScheduledFuture<V> schedule(Callable<V> callable,
+                                       long delay,
+                                       TimeUnit unit) {
+    if (callable == null || unit == null)
+        throw new NullPointerException();
+    RunnableScheduledFuture<V> t = decorateTask(callable,
+                                                new ScheduledFutureTask<V>(callable,
+                                                                           triggerTime(delay, unit),
+                                                                           sequencer.getAndIncrement()));
+    delayedExecute(t);
+    return t;
+}
+
+// 固定间隔执行
+// 1.当任务运行时间长于间隔时，以运行时间为准
+public ScheduledFuture<?> scheduleAtFixedRate(Runnable command,
+                                              long initialDelay,
+                                              long period,
+                                              TimeUnit unit) {
+    if (command == null || unit == null)
+        throw new NullPointerException();
+    if (period <= 0L)
+        throw new IllegalArgumentException();
+    ScheduledFutureTask<Void> sft =
+        new ScheduledFutureTask<Void>(command,
+                                      null,
+                                      triggerTime(initialDelay, unit),
+                                      unit.toNanos(period),
+                                      sequencer.getAndIncrement());
+    RunnableScheduledFuture<Void> t = decorateTask(command, sft);
+    sft.outerTask = t;
+    delayedExecute(t);
+    return t;
+}
+
+// 2.不影响时间间隔0
+public ScheduledFuture<?> scheduleWithFixedDelay(Runnable command,
+                                                 long initialDelay,
+                                                 long delay,
+                                                 TimeUnit unit) {
+    if (command == null || unit == null)
+        throw new NullPointerException();
+    if (delay <= 0L)
+        throw new IllegalArgumentException();
+    ScheduledFutureTask<Void> sft =
+        new ScheduledFutureTask<Void>(command,
+                                      null,
+                                      triggerTime(initialDelay, unit),
+                                      -unit.toNanos(delay),
+                                      sequencer.getAndIncrement());
+    RunnableScheduledFuture<Void> t = decorateTask(command, sft);
+    sft.outerTask = t;
+    delayedExecute(t);
+    return t;
+}
+```
+
+###### <font color=" #28FF28">*案例-每周四18：00定时任务</font>
+
+![image-20210727194803000](juc.assets/image-20210727194803000.png) 
+
+###### Tomcat线程池
+
+![image-20210727214620337](juc.assets/image-20210727214620337.png) 
+
+![image-20210727220431247](juc.assets/image-20210727220431247.png) 
+
+tomcat 8.56
+
+*execute()*
+
+```java
+package org.apache.tomcat.util.threads;
+
+public class ThreadPoolExecutor extends java.util.concurrent.ThreadPoolExecutor {
+    public void execute(Runnable command, long timeout, TimeUnit unit) {
+        submittedCount.incrementAndGet();
+        try {
+            super.execute(command);
+        } catch (RejectedExecutionException rx) {
+            if (super.getQueue() instanceof TaskQueue) {
+                final TaskQueue queue = (TaskQueue)super.getQueue();
+                try {
+                    if (!queue.force(command, timeout, unit)) {
+                        submittedCount.decrementAndGet();
+                        throw new RejectedExecutionException(sm.getString("threadPoolExecutor.queueFull"));
+                    }
+                } catch (InterruptedException x) {
+                    submittedCount.decrementAndGet();
+                    throw new RejectedExecutionException(x);
+                }
+            } else {
+                submittedCount.decrementAndGet();
+                throw rx;
+            }
+
+        }
+    }
+}
+```
+
+*force()*
+
+```java
+package org.apache.tomcat.util.threads;
+
+public class TaskQueue extends LinkedBlockingQueue<Runnable> {
+	public boolean force(Runnable o, long timeout, TimeUnit unit) throws InterruptedException {
+        if (parent == null || parent.isShutdown()) {
+            throw new RejectedExecutionException(sm.getString("taskQueue.notRunning"));
+        }
+        return super.offer(o,timeout,unit); //forces the item onto the queue, to be used if the task is rejected
+    }
+}
+```
+
+![image-20210728103619396](juc.assets/image-20210728103619396.png) ![image-20210728104249037](juc.assets/image-20210728104249037.png)
+
+##### *<font color=" FF9D6F">设计模式-工作线程模式</font> 
+
+###### 定义
+
+![image-20210727170329497](juc.assets/image-20210727170329497.png) 
+
+###### 饥饿现象
+
+![image-20210727170919979](juc.assets/image-20210727170919979.png) 
+
+**解决方案**
+
+不同任务类型使用不同线程池
+
+###### 线程池创建个数
+
+- 过小导致程序不能充分利用系统资源，容易导致饥饿
+- 过大导致更多线程上下文切换，占用更多内存
+
+**CPU 密集型运算**
+
+![image-20210727171930577](juc.assets/image-20210727171930577.png) 
+
+**I / O 密集型运算**
+
+![image-20210727172445369](juc.assets/image-20210727172445369.png) 
+
+#### Fork/Join
+
+##### 概念
+
+![image-20210728104934014](juc.assets/image-20210728104934014.png) 
+
+##### 使用
+
+```java
+public class TestForkJoin {
+
+    public static void main(String[] args) {
+        ForkJoinPool pool = new ForkJoinPool();
+        System.out.println(pool.invoke(new MyTask(5)));
+    }
+}
+
+// 求和1~n
+class MyTask extends RecursiveTask<Integer> {
+
+    private int n;
+
+    public MyTask(int n) {
+        this.n = n;
+    }
+
+    @Override
+    protected Integer compute() {
+        if (n == 1){
+            return 1;
+        }
+        MyTask myTask = new MyTask(n - 1);
+        myTask.fork();// 让一个线程去执行此任务
+        int result = n + myTask.join();// 获取任务结果
+        return result;
+    }
+}
+```
+
+```mermaid
+graph LR
+	t1("t1 5 + #123;4#125;")
+	t2("t2 4 + #123;3#125;")
+	t3("t3 3 + #123;2#125;")
+	t4("t0 2 + #123;1#125;")
+	t5(t0)
+	t6(结果)
+	t1 --"#123;4#125;"--> t2
+	t2 -.10.-> t1
+	t2 --"#123;3#125;"--> t3
+	t3 -.6.-> t2
+	t3 --"#123;2#125;"--> t4
+	t4 -.3.-> t3
+	t4 --"#123;1#125;"--> t5
+	t5 -.1.-> t4
+	t1 -.15.-> t6
+```
+
+**改进**
+
+```java
+class AddTask extends RecursiveTask<Integer> {
+
+    int begin;
+    int end;
+
+    public AddTask(int begin, int end) {
+        this.begin = begin;
+        this.end = end;
+    }
+
+    @Override
+    public String toString() {
+        return "AddTask{" +
+                "begin=" + begin +
+                ", end=" + end +
+                '}';
+    }
+
+    @Override
+    protected Integer compute() {
+        if (begin == end){
+            return begin;
+        }
+        if (end - begin == 1){
+            return end + begin;
+        }
+        int mid = (end + begin) / 2;
+        AddTask t1 = new AddTask(begin, mid);
+        t1.fork();
+        AddTask t2 = new AddTask(mid + 1, end);
+        t2.fork();
+        int result = t1.join() + t2.join();
+        return result;
+    }
+}
+```
+
+```mermaid
+graph LR
+	t1("#123;1,3#125; + #123;4,5#125;")
+	t2("#123;1,2#125; + #123;3,3#125;")
+	t3(t0)
+	t4(t3)
+	t5(结果)
+	t1 --"#123;1,3#125;"--> t2
+	t2 -.6.-> t1
+	t2 --"#123;3,3#125;"--> t3
+	t2 --"#123;1,2#125;"--> t3
+	t3 -.3.-> t2
+	t3 -.3.-> t2
+	t1 --"#123;4,5#125;"--> t4
+	t4 -.9.-> t1
+	t1 -.15.-> t5
+```
+
+### JUC
+
+#### *<font color="#FF5151">原理——AQS</font>
+
+全称AbstractQueuedSynchronizer，是阻塞式锁和相关同步器工具的框架
+
+特点：
+
+1. 用state属性来表示资源的状态（分独占模式和共享模式），子类需要定义如何维护这个状态，控制如何获取锁和释放锁
+   1. getState -获取 state 状态
+   2. setState -设置 state 状态
+   3. compareAndSetState -乐观锁机制设置 state 状态
+   4. 独占模式是只有一个线程能够访问资源，而共享模式可以允许多个线程访问资源
+2. 提供了基于 FIFO 的等待队列，类似于 Monitor 的 EntryList
+3. 条件变量来实现等待、唤醒机制，支持多个条件变量，类似于 Monitor 的 WaitSet
+
+
+
+子类主要实现这样一些方法（默认抛出 UnsupportedOperationException）
+
+- tryAcquire
+- tryRelease
+- tryAcquireShared
+- tryReleaseShared
+- isHeldExcelusively
+
+```java
+// 获取锁
+// 如果获取锁失败
+if (!tryAcquire(arg)) {
+    // 入队，可以选择阻塞当前线程，阻塞实现基于park、 unpark机制
+}
+
+// 释放锁
+// 如果释放锁成功
+if （tryRelease(arg)）{
+    // 让阻塞线程恢复运行
+}
+```
+
+##### 自定义锁
+
+```java
+// 自定义锁（不可重入锁）
+public class MyLock implements Lock {
+
+    // 同步器类
+    class MySync extends AbstractQueuedSynchronizer {
+        @Override
+        protected boolean tryAcquire(int arg) {
+            if (compareAndSetState(0, 1)) {
+                // 加锁成功,并设置 owner 为当前线程
+                setExclusiveOwnerThread(Thread.currentThread());
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        protected boolean tryRelease(int arg) {
+            setExclusiveOwnerThread(null);
+            setState(0);
+            return true;
+        }
+
+        @Override
+        protected boolean isHeldExclusively() {
+            return getState() == 1;
+        }
+
+        public Condition newCondition() {
+            return new ConditionObject();
+        }
+    }
+
+    private MySync sync = new MySync();
+
+    @Override // 加锁（不成功进入等待队列）
+    public void lock() {
+        sync.acquire(1);
+    }
+
+    @Override // 加锁、可打断
+    public void lockInterruptibly() throws InterruptedException {
+        sync.acquireInterruptibly(1);
+    }
+
+    @Override // 尝试加锁（一次）
+    public boolean tryLock() {
+        return sync.tryAcquire(1);
+    }
+
+    @Override // 尝试加锁，带超时时间
+    public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
+        return sync.tryAcquireNanos(1, unit.toNanos(time));
+    }
+
+    @Override // 解锁
+    public void unlock() {
+        sync.release(1);
+    }
+
+    @Override // 创建条件变量
+    public Condition newCondition() {
+        return sync.newCondition();
+    }
+}
+```
+
+#### *<font color="#FF5151">原理——ReentranLock</font>
+
+![image-20210728205758612](juc.assets/image-20210728205758612.png) 
+
+##### 非公平锁实现原理
+
+###### 加锁解锁流程
+
+***构造器***
+
+```java
+public ReentrantLock() {
+    sync = new NonfairSync();
+}
+
+// 有参构造，无参构造默认非公平锁实现 
+public ReentrantLock(boolean fair) {
+    sync = fair ? new FairSync() : new NonfairSync();
+}
+```
+
+*NonfairSync*
+
+*没有竞争时*
+
+```java
+/**
+ * Performs lock.  Try immediate barge, backing up to normal
+ * acquire on failure.
+ */
+final void lock() {
+    if (compareAndSetState(0, 1))
+        setExclusiveOwnerThread(Thread.currentThread());
+    else
+        acquire(1);
+}
+```
+
+```mermaid
+graph LR
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5(Thread-0)
+	t4 ----> t5
+	style t5 fill:#ccf
+	style nodeQueue fill:#66ff66
+```
+
+*第一个竞争出现时*
+
+```java
+public final void acquire(int arg) {
+    if (!tryAcquire(arg) &&
+        acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+        selfInterrupt();
+}
+
+protected final boolean tryAcquire(int acquires) {
+    return nonfairTryAcquire(acquires);
+}
+
+@ReservedStackAccess
+final boolean nonfairTryAcquire(int acquires) {
+    final Thread current = Thread.currentThread();
+    int c = getState();
+    if (c == 0) {
+        if (compareAndSetState(0, acquires)) {
+            setExclusiveOwnerThread(current);
+            return true;
+        }
+    }
+    else if (current == getExclusiveOwnerThread()) {
+        int nextc = c + acquires;
+        if (nextc < 0) // overflow
+            throw new Error("Maximum lock count exceeded");
+        setState(nextc);
+        return true;
+    }
+    return false;
+}
+```
+
+```mermaid
+graph LR
+	subgraph commit
+		t8["1.cas 尝试 0 -> 1 失败"]
+		t9["2.tryAcquire 逻辑，如果 state 已经是1，失败"]
+	end
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5(Thread-0)
+	t6(Thread-1)
+	t4 ----> t5
+	t6 ----> t1
+	style t5 fill:#ccf
+	style t6 fill:#ffb6c1
+	style commit fill:#ffff00
+	style nodeQueue fill:#66ff66
+```
+
+Thread - 1 执行了
+
+1. cas尝试将 state 由 0 改为 1，结果失败
+2. 进入tryAcquire 逻辑， 这时 state 已经是 1， 结果仍然失败
+3. 接下来进入 addWaiter 逻辑, 构造 Node 队列
+   - Node 的 waitStatus 状态默认 0 为正常
+   - Node 的创建是懒惰的
+   - 其中第一个 Node 称为 Dummy(哑元) 或哨兵，用来占位，并不关联线程
+
+```java
+private Node addWaiter(Node mode) {
+    Node node = new Node(mode);
+
+    for (;;) {
+        Node oldTail = tail;
+        if (oldTail != null) {
+            node.setPrevRelaxed(oldTail);
+            if (compareAndSetTail(oldTail, node)) {
+                oldTail.next = node;
+                return node;
+            }
+        } else {
+            initializeSyncQueue();
+        }
+    }
+}
+```
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5(Thread-0)
+	t6("waitState:0 Node#40;null#41;")
+	t7("waitState:0 Node#40;Thread-1#41; ")
+	t4 ----> t5
+	t2 ====> t6
+	t6 ====> t7
+	t7 ====> t6
+	t3 ====> t7
+	t7 ====> t3
+	style t5 fill:#ccf
+	style t6 fill:#ffb6c1
+	style t7 fill:#ffb6c1
+	style nodeQueue fill:#66ff66
+```
+
+当线程进入 acquireQueued 逻辑
+
+1. acquireQueued 会在一个死循环里不断尝试获得锁，失败后进入 park 阻塞
+
+2. 如果自己是紧邻着 head ，那么再次 tryAcquire 尝试获取锁，当这时 state 仍然是1 ，失败
+
+   ```java
+   final boolean acquireQueued(final Node node, int arg) {
+       boolean interrupted = false;
+       try {
+           for (;;) {
+               final Node p = node.predecessor();
+               if (p == head && tryAcquire(arg)) {
+                   setHead(node);
+                   p.next = null; // help GC
+                   return interrupted;
+               }
+               if (shouldParkAfterFailedAcquire(p, node))
+                   interrupted |= parkAndCheckInterrupt();
+           }
+       } catch (Throwable t) {
+           cancelAcquire(node);
+           if (interrupted)
+               selfInterrupt();
+           throw t;
+       }
+   }
+   ```
+
+3. 进入 shouldParkAfterFailedAcquire 逻辑，将前驱节点 node ，即 head 的 waitState 改为 -1， 这次返回 false
+
+4. shouldParkAfterFailedAcquire 执行完毕回到 acquireQueued, 再次 tryAcquire ,尝试获取锁，这时 state 仍为 1 ，失败
+
+5. 当再次进入 shouldParkAfterFailedAcquire  时，这时因为其前驱 node 的 waitStatus 已经时 -1 这时返回true
+
+   ```java
+   private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
+       int ws = pred.waitStatus;
+       if (ws == Node.SIGNAL)
+           /*
+            * This node has already set status asking a release
+            * to signal it, so it can safely park.
+            */
+           return true;
+       if (ws > 0) {
+           /*
+            * Predecessor was cancelled. Skip over predecessors and
+            * indicate retry.
+            */
+           do {
+               node.prev = pred = pred.prev;
+           } while (pred.waitStatus > 0);
+           pred.next = node;
+       } else {
+           /*
+            * waitStatus must be 0 or PROPAGATE.  Indicate that we
+            * need a signal, but don't park yet.  Caller will need to
+            * retry to make sure it cannot acquire before parking.
+            */
+           pred.compareAndSetWaitStatus(ws, Node.SIGNAL);
+       }
+       return false;
+   }
+   ```
+
+   ```mermaid
+   graph TB
+   	subgraph NonfairSync
+   		t1(state = 1)
+   		subgraph nodeQueue
+   			t2(head)
+   			t3(tail)
+   		end
+   		t4(exclusiveOwnerThread)
+   	end
+   	t5(Thread-0)
+   	t6("waitState:-1 Node#40;null#41;")
+   	t7("waitState:0 Node#40;Thread-1#41; ")
+   	t4 ----> t5
+   	t2 ====> t6
+   	t6 ====> t7
+   	t7 ====> t6
+   	t3 ====> t7
+   	t7 ====> t3
+   	style t5 fill:#ccf
+   	style t6 fill:#99ffff
+   	style t7 fill:#ffb6c1
+   	style nodeQueue fill:#66ff66
+   ```
+
+6. 进入 parkAndCheckInterrupt , Thread-1 park
+
+   ```java
+   private final boolean parkAndCheckInterrupt() {
+       LockSupport.park(this);
+       return Thread.interrupted();
+   }
+   ```
+
+   ```mermaid
+   graph TB
+   	subgraph NonfairSync
+   		t1(state = 1)
+   		subgraph nodeQueue
+   			t2(head)
+   			t3(tail)
+   		end
+   		t4(exclusiveOwnerThread)
+   	end
+   	t5(Thread-0)
+   	t6("waitState:-1 Node#40;null#41;")
+   	t7("waitState:0 Node#40;Thread-1#41; ")
+   	t4 ----> t5
+   	t2 ====> t6
+   	t6 ====> t7
+   	t7 ====> t6
+   	t3 ====> t7
+   	t7 ====> t3
+   	style t5 fill:#ccf
+   	style t6 fill:#99ffff
+   	style t7 fill:#c0c0c0
+   	style nodeQueue fill:#66ff66
+   ```
+
+   
+
+7. 再次有多个线程经历上述竞争失败
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5(Thread-0)
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;Thread-1#41; ")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t4 ----> t5
+	t2 ====> t6
+	t6 ====> t7
+	t7 ====> t6
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	style t5 fill:#ccf
+	style t6 fill:#99ffff
+	style t7 fill:#c0c0c0
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style nodeQueue fill:#66ff66
+```
+
+*Thread-0 释放锁*
+
+```java
+public void unlock() {
+    sync.release(1);
+}
+
+public final boolean release(int arg) {
+    if (tryRelease(arg)) {
+        Node h = head;
+        if (h != null && h.waitStatus != 0)
+            unparkSuccessor(h);
+        return true;
+    }
+    return false;
+}
+```
+
+进入 tryRelease 流程，如果成功
+
+- 设置 ExclusiveOwnerThread 为 null
+- state = 0
+
+```java
+protected boolean tryRelease(int arg) {
+    throw new UnsupportedOperationException();
+}
+
+protected final boolean tryRelease(int releases) {
+    int c = getState() - releases;
+    if (Thread.currentThread() != getExclusiveOwnerThread())
+        throw new IllegalMonitorStateException();
+    boolean free = false;
+    if (c == 0) {
+        free = true;
+        setExclusiveOwnerThread(null);
+    }
+    setState(c);
+    return free;
+}
+```
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5(null)
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;Thread-1#41; ")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t4 -..-> t5
+	t2 ====> t6
+	t6 ====> t7
+	t7 ====> t6
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	style t5 fill:#ffff
+	style t6 fill:#99ffff
+	style t7 fill:#c0c0c0
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style nodeQueue fill:#66ff66
+```
+
+当前队列不为 null ，并且 head 的 waitStatus = -1 进入 unparkSuccessor 流程
+
+找到当前队列中离 head 最近的一个 Node（没取消的）， unpark 恢复其运行
+
+```java
+private void unparkSuccessor(Node node) {
+    /*
+     * If status is negative (i.e., possibly needing signal) try
+     * to clear in anticipation of signalling.  It is OK if this
+     * fails or if status is changed by waiting thread.
+     */
+    int ws = node.waitStatus;
+    if (ws < 0)
+        node.compareAndSetWaitStatus(ws, 0);
+
+    /*
+     * Thread to unpark is held in successor, which is normally
+     * just the next node.  But if cancelled or apparently null,
+     * traverse backwards from tail to find the actual
+     * non-cancelled successor.
+     */
+    Node s = node.next;
+    if (s == null || s.waitStatus > 0) {
+        s = null;
+        for (Node p = tail; p != node && p != null; p = p.prev)
+            if (p.waitStatus <= 0)
+                s = p;
+    }
+    if (s != null)
+        LockSupport.unpark(s.thread);
+}
+```
+
+将 Thread -1 进入 acquireQueued 流程
+
+如果加锁成功（没有竞争）， 会设置
+
+- exclusiveOwnerThread 为 Thread -1 ，state = 1
+- head 指向刚刚 Thread-1 所在的 Node， 该 Node 清空 Thread
+- 原本的 head 因为从链表断开，可被作为垃圾回收
+
+```java
+final boolean acquireQueued(final Node node, int arg) {
+    boolean interrupted = false;
+    try {
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head && tryAcquire(arg)) {
+                setHead(node);
+                p.next = null; // help GC
+                return interrupted;
+            }
+            if (shouldParkAfterFailedAcquire(p, node))
+                interrupted |= parkAndCheckInterrupt();
+        }
+    } catch (Throwable t) {
+        cancelAcquire(node);
+        if (interrupted)
+            selfInterrupt();
+        throw t;
+    }
+}
+```
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5("Thread-1")
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;null#41;")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t4 ----> t5
+	t2 ====> t7
+	t7 ====> t2
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	style t5 fill:#ccf
+	style t6 fill:#99ffff
+	style t7 fill:#99ffff
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style nodeQueue fill:#66ff66
+```
+
+如果这时候有其他线程来竞争（非公平体现）
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5(null)
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;Thread-1#41; ")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t10("Thread-4")
+	t4 ----> t5
+	t7 -..-> t4
+	t10 -..-> t4
+	t2 ====> t6
+	t6 ====> t7
+	t7 ====> t6
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	style t5 fill:#ffff
+	style t6 fill:#99ffff
+	style t7 fill:#ffb6c1
+	style t10 fill:#ffb6c1
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style nodeQueue fill:#66ff66
+```
+
+如果再次竞争失败
+
+- Thread-4 被设置为 exclusiveOwnerThread, state=1
+- Thread-1 再次进入 acquireQueued 流程，重新阻塞
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5(null)
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;Thread-1#41; ")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t10("Thread-4")
+	t4 ----> t10
+	t2 ====> t6
+	t6 ====> t7
+	t7 ====> t6
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	style t5 fill:#ffff
+	style t6 fill:#99ffff
+	style t7 fill:#c0c0c0
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t10 fill:#ccf
+	style nodeQueue fill:#66ff66
+```
+
+##### 锁重入原理
+
+```java
+abstract static class Sync extends AbstractQueuedSynchronizer { 
+    final boolean nonfairTryAcquire(int acquires) {
+         final Thread current = Thread.currentThread();
+         int c = getState();
+         if (c == 0) {
+             if (compareAndSetState(0, acquires)) {
+                 setExclusiveOwnerThread(current);
+                 return true;
+             }
+         }
+        // 已经获取锁并且还是当前线程，表示发生锁重入
+         else if (current == getExclusiveOwnerThread()) {
+             // state++
+             int nextc = c + acquires;
+             if (nextc < 0) // overflow
+                 throw new Error("Maximum lock count exceeded");
+             setState(nextc);
+             return true;
+         }
+         return false;
+     }
+
+    protected final boolean tryRelease(int releases) {
+        int c = getState() - releases;
+        if (Thread.currentThread() != getExclusiveOwnerThread())
+            throw new IllegalMonitorStateException();
+        boolean free = false;
+        // state 减到 0
+        if (c == 0) {
+            free = true;
+            setExclusiveOwnerThread(null);
+        }
+        setState(c);
+        return free;
+    }
+}
+```
+
+##### 可打断原理
+
+###### 不可打断模式
+
+在此模式下，即使它被打断，仍会驻留在 AQS 队列中，等获得锁后才能继续运行（只是打断标记被设置为 true）
+
+```java
+private final boolean parkAndCheckInterrupt() {
+    // 如果打断标记为 true ，park 失效
+    LockSupport.park(this);
+    // interrupted 清楚打断标记
+    return Thread.interrupted();
+}
+
+final boolean acquireQueued(final Node node, int arg) {
+    boolean interrupted = false;
+    try {
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head && tryAcquire(arg)) {
+                setHead(node);
+                p.next = null; // help GC
+                // 获得锁后才能返回打断状态
+                return interrupted;
+            }
+            if (shouldParkAfterFailedAcquire(p, node))
+                // 记录打断标记 true
+                interrupted |= parkAndCheckInterrupt();
+        }
+    } catch (Throwable t) {
+        cancelAcquire(node);
+        if (interrupted)
+            selfInterrupt();
+        throw t;
+    }
+}
+
+public final void acquire(int arg) {
+    if (!tryAcquire(arg) &&
+        acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+        // 打断标记为 true
+        selfInterrupt();
+}
+
+// 重新打断
+static void selfInterrupt() {
+    Thread.currentThread().interrupt();
+}
+```
+
+*可打断模式*
+
+```java
+public final void acquireInterruptibly(int arg)
+    throws InterruptedException {
+    if (Thread.interrupted())
+        throw new InterruptedException();
+    // 没有获得锁
+    if (!tryAcquire(arg))
+        doAcquireInterruptibly(arg);
+}
+
+private void doAcquireInterruptibly(int arg)
+    throws InterruptedException {
+    final Node node = addWaiter(Node.EXCLUSIVE);
+    try {
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head && tryAcquire(arg)) {
+                setHead(node);
+                p.next = null; // help GC
+                return;
+            }
+            if (shouldParkAfterFailedAcquire(p, node) &&
+                parkAndCheckInterrupt())
+                // 在 park 过程中如果被 interrupt 会进入这里
+                // 直接抛出异常
+                throw new InterruptedException();
+        }
+    } catch (Throwable t) {
+        cancelAcquire(node);
+        throw t;
+    }
+}
+```
+
+##### 公平锁实现原理
+
+```java
+protected final boolean tryAcquire(int acquires) {
+    final Thread current = Thread.currentThread();
+    int c = getState();
+    if (c == 0) {
+        // 先检查 AQS 队列中是否有前驱节点，没有才竞争锁
+        if (!hasQueuedPredecessors() &&
+            compareAndSetState(0, acquires)) {
+            setExclusiveOwnerThread(current);
+            return true;
+        }
+    }
+    else if (current == getExclusiveOwnerThread()) {
+        int nextc = c + acquires;
+        if (nextc < 0)
+            throw new Error("Maximum lock count exceeded");
+        setState(nextc);
+        return true;
+    }
+    return false;
+}
+
+// 检查是否有前驱节点
+public final boolean hasQueuedPredecessors() {
+    Node h, s;
+    if ((h = head) != null) {
+        if ((s = h.next) == null || s.waitStatus > 0) {
+            s = null; // traverse in case of concurrent cancellation
+            for (Node p = tail; p != h && p != null; p = p.prev) {
+                if (p.waitStatus <= 0)
+                    s = p;
+            }
+        }
+        if (s != null && s.thread != Thread.currentThread())
+            return true;
+    }
+    return false;
+}
+```
+
+##### 条件变量实现原理
+
+每个条件变量对应一个等待队列，实现类 ConditionObject
+
+###### await 流程
+
+开始 Thread-0 持有锁
+
+调用 await , 进入 ConditionObject 的 addConditionWaiter 流程
+
+创建新的 Node 状态为 -2（Node.CONDITION）关联 Thread-0, 加入等待队列尾部
+
+```java
+public final void await() throws InterruptedException {
+    if (Thread.interrupted())
+        throw new InterruptedException();
+    Node node = addConditionWaiter();
+    int savedState = fullyRelease(node);
+    int interruptMode = 0;
+    while (!isOnSyncQueue(node)) {
+        LockSupport.park(this);
+        if ((interruptMode = checkInterruptWhileWaiting(node)) != 0)
+            break;
+    }
+    if (acquireQueued(node, savedState) && interruptMode != THROW_IE)
+        interruptMode = REINTERRUPT;
+    if (node.nextWaiter != null) // clean up if cancelled
+        unlinkCancelledWaiters();
+    if (interruptMode != 0)
+        reportInterruptAfterWait(interruptMode);
+}
+
+private Node addConditionWaiter() {
+    Node t = lastWaiter;
+    // If lastWaiter is cancelled, clean out.
+    if (t != null && t.waitStatus != Node.CONDITION) {
+        unlinkCancelledWaiters();
+        t = lastWaiter;
+    }
+    Node node = new Node(Thread.currentThread(), Node.CONDITION);
+    if (t == null)
+        firstWaiter = node;
+    else
+        t.nextWaiter = node;
+    lastWaiter = node;
+    return node;
+}
+```
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5(Thread-0)
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;Thread-1#41; ")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t4 ----> t5
+	t2 ====> t6
+	t6 ====> t7
+	t7 ====> t6
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	subgraph ConditionObject
+		t10(firstWaiter)
+		t11(lastWaiter)
+	end
+	t12("waitState:-2 Node#40;Thread-0#41;")
+	t10 ----> t12
+	t11 ----> t12
+	style t5 fill:#ccf
+	style t6 fill:#99ffff
+	style t7 fill:#c0c0c0
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t12 fill:#99ffff
+	style nodeQueue fill:#66ff66
+	style ConditionObject fill:#66ff66
+```
+
+接下来进入 AQS 的 fullyRelease 流程，释放同步器上的锁
+
+````java
+final int fullyRelease(Node node) {
+    boolean failed = true;
+    try {
+        int savedState = getState();
+        if (release(savedState)) {
+            failed = false;
+            return savedState;
+        } else {
+            throw new IllegalMonitorStateException();
+        }
+    } finally {
+        if (failed)
+            node.waitStatus = Node.CANCELLED;
+    }
+}
+
+public final boolean release(int arg) {
+    if (tryRelease(arg)) {
+        Node h = head;
+        if (h != null && h.waitStatus != 0)
+            unparkSuccessor(h);
+        return true;
+    }
+    return false;
+}
+````
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5(null)
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;Thread-1#41; ")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t4 ----> t5
+	t2 ====> t6
+	t6 ====> t7
+	t7 ====> t6
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	subgraph ConditionObject
+		t10(firstWaiter)
+		t11(lastWaiter)
+	end
+	t12("waitState:-2 Node#40;Thread-0#41;")
+	t10 ----> t12
+	t11 ----> t12
+	style t5 fill:#ffffff
+	style t6 fill:#99ffff
+	style t7 fill:#c0c0c0
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t12 fill:#99ffff
+	style nodeQueue fill:#66ff66
+	style ConditionObject fill:#66ff66
+```
+
+unpark AQS 队列中的下一个节点，竞争锁，假设没有其他竞争线程， Thread-1 竞争成功
+
+```java
+	private void unparkSuccessor(Node node) {
+        /*
+         * If status is negative (i.e., possibly needing signal) try
+         * to clear in anticipation of signalling.  It is OK if this
+         * fails or if status is changed by waiting thread.
+         */
+        int ws = node.waitStatus;
+        if (ws < 0)
+            compareAndSetWaitStatus(node, ws, 0);
+
+        /*
+         * Thread to unpark is held in successor, which is normally
+         * just the next node.  But if cancelled or apparently null,
+         * traverse backwards from tail to find the actual
+         * non-cancelled successor.
+         */
+        Node s = node.next;
+        if (s == null || s.waitStatus > 0) {
+            s = null;
+            for (Node t = tail; t != null && t != node; t = t.prev)
+                if (t.waitStatus <= 0)
+                    s = t;
+        }
+        if (s != null)
+            LockSupport.unpark(s.thread);
+    }
+```
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5("Thread-1")
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;null#41;")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t4 ----> t5
+	t2 ====> t7
+	t7 ====> t2
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	subgraph ConditionObject
+		t10(firstWaiter)
+		t11(lastWaiter)
+	end
+	t12("waitState:-2 Node#40;Thread-0#41;")
+	t10 ----> t12
+	t11 ----> t12
+	style t5 fill:#ccf
+	style t6 fill:#99ffff
+	style t7 fill:#99ffff
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t12 fill:#99ffff
+	style nodeQueue fill:#66ff66
+	style ConditionObject fill:#66ff66
+```
+
+park 阻塞 Thread-0
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5("Thread-1")
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;null#41;")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t4 ----> t5
+	t2 ====> t7
+	t7 ====> t2
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	subgraph ConditionObject
+		t10(firstWaiter)
+		t11(lastWaiter)
+	end
+	t12("waitState:-2 Node#40;Thread-0#41;")
+	t10 ----> t12
+	t11 ----> t12
+	style t5 fill:#ccf
+	style t6 fill:#99ffff
+	style t7 fill:#99ffff
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t12 fill:#c0c0c0
+	style nodeQueue fill:#66ff66
+	style ConditionObject fill:#66ff66
+```
+
+###### signal 流程
+
+假设 Thread-1 要唤醒 Thread-0
+
+调用 signal 方法,检查是否是锁的持有者
+
+```java
+public final void signal() {
+    if (!isHeldExclusively())
+        throw new IllegalMonitorStateException();
+    Node first = firstWaiter;
+    if (first != null)
+        doSignal(first);
+}
+```
+
+进入 ConditionObject 的 doSignal 流程，取得等待队列中第一个 Node，即 Thread-0 所在 Node
+
+```java
+private void doSignal(Node first) {
+    do {
+        if ( (firstWaiter = first.nextWaiter) == null)
+            lastWaiter = null;
+        first.nextWaiter = null;
+    } while (!transferForSignal(first) &&
+             (first = firstWaiter) != null);
+}
+```
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5("Thread-1")
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;null#41;")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:0 Node#40;Thread-3#41; ")
+	t4 ----> t5
+	t2 ====> t7
+	t7 ====> t2
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t3 ====> t9
+	t9 ====> t3
+	subgraph ConditionObject
+		t10(firstWaiter)
+		t11(lastWaiter)
+	end
+	t12("null")
+	t13("waitState:-2 Node#40;Thread-0#41;")
+	t10 ----> t12
+	t11 ----> t12
+	style t5 fill:#ccf
+	style t6 fill:#99ffff
+	style t7 fill:#99ffff
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t12 fill:#ffffff
+	style t13 fill:#c0c0c0
+	style nodeQueue fill:#66ff66
+	style ConditionObject fill:#66ff66
+```
+
+执行 transferForSignal 流程，将该 Node 加入 AQS 队列尾部，将 Thrad-0 的 waitStatus 改为0， Thread-3 的 waitStatus 改为 -1
+
+```java
+	final boolean transferForSignal(Node node) {
+        /*
+         * If cannot change waitStatus, the node has been cancelled.
+         */
+        if (!compareAndSetWaitStatus(node, Node.CONDITION, 0))
+            return false;
+
+        /*
+         * Splice onto queue and try to set waitStatus of predecessor to
+         * indicate that thread is (probably) waiting. If cancelled or
+         * attempt to set waitStatus fails, wake up to resync (in which
+         * case the waitStatus can be transiently and harmlessly wrong).
+         */
+        Node p = enq(node);
+        int ws = p.waitStatus;
+        if (ws > 0 || !compareAndSetWaitStatus(p, ws, Node.SIGNAL))
+            LockSupport.unpark(node.thread);
+        return true;
+    }
+
+	// 将节点加入队列
+	private Node enq(final Node node) {
+        for (;;) {
+            Node t = tail;
+            if (t == null) { // Must initialize
+                if (compareAndSetHead(new Node()))
+                    tail = head;
+            } else {
+                node.prev = t;
+                if (compareAndSetTail(t, node)) {
+                    t.next = node;
+                    return t;
+                }
+            }
+        }
+    }
+```
+
+```mermaid
+graph TB
+	subgraph NonfairSync
+		t1(state = 1)
+		subgraph nodeQueue
+			t2(head)
+			t3(tail)
+		end
+		t4(exclusiveOwnerThread)
+	end
+	t5("Thread-1")
+	t6("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;null#41;")
+	t8("waitState:-1 Node#40;Thread-2#41; ")
+	t9("waitState:-1 Node#40;Thread-3#41; ")
+	t13("waitState:0 Node#40;Thread-0#41;")
+	t4 ----> t5
+	t2 ====> t7
+	t7 ====> t2
+	t7 ====> t8
+	t8 ====> t7
+	t8 ====> t9
+	t9 ====> t8
+	t9 ====> t13
+	t13 ====> t9
+	t3 ====> t13
+	t13 ====> t3
+	subgraph ConditionObject
+		t10(firstWaiter)
+		t11(lastWaiter)
+	end
+	t12("null")
+	t10 ----> t12
+	t11 ----> t12
+	style t5 fill:#ccf
+	style t6 fill:#99ffff
+	style t7 fill:#99ffff
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t12 fill:#ffffff
+	style t13 fill:#c0c0c0
+	style nodeQueue fill:#66ff66
+	style ConditionObject fill:#66ff66
+```
+
+Thread-1 释放锁，进入 unlock 流程
+
+#### 读写锁
+
+##### ReentrantReadWriteLock
+
+当读操作远远高于写操作时，这时候使用 *读写锁* 让 *读 - 读* 可以并发，提高性能
+
+类似于数据库中的 *select ... from ... lock in share mode*
+
+提供一个 *数据容器类* 内部分别使用读锁保护数据的 read() 方法， 写锁保护数据的 write() 方法
+
+```java
+public class TestReentrantReadWriteLock {
+
+    public static void main(String[] args) {
+        DataContainer dataContainer = new DataContainer();
+
+        new Thread(() -> {
+            dataContainer.read();
+        },"t1").start();
+
+        new Thread(() -> {
+            dataContainer.read();
+        },"t2").start();
+    }
+}
+
+class DataContainer {
+    private Object data;
+
+    private ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock();
+    private ReentrantReadWriteLock.ReadLock readLock = readWriteLock.readLock();
+    private ReentrantReadWriteLock.WriteLock writeLock = readWriteLock.writeLock();
+
+    public Object read() {
+        System.out.println("获取读锁");
+        readLock.lock();
+        try {
+            System.out.println("读取");
+            try {
+                sleep(1);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            return data;
+        } finally {
+            System.out.println("释放读锁");
+            readLock.unlock();
+        }
+    }
+
+    public void write(){
+        System.out.println("获取写锁");
+        writeLock.lock();
+        try {
+            System.out.println("写锁");
+        } finally {
+            System.out.println("释放写锁");
+            writeLock.unlock();
+        }
+    }
+}
+```
+
+**注意事项**
+
+- 读锁不支持条件变量
+- 重入时升级不支持，即持有读锁的情况下去获取写锁，会导致获取写锁永久等待
+- 重入时降级支持，即持有写锁情况下获取读锁
+
+![image-20210729175131596](juc.assets/image-20210729175131596.png) 
+
+##### 缓存实现
+
+###### 缓存更新策略
+
+*先清缓存* (不可取)
+
+```mermaid
+sequenceDiagram
+	participant p1 as B
+	participant p2 as A
+	participant p3 as 缓存
+	participant p4 as 数据库
+	p1 ->> p3:1)清空缓存
+	p2 ->> p4:2)查询数据库（x=1）
+	p2 ->> p3:3)将查询结果放入缓存（x=1）
+	p1 ->> p4:4)将新数据存入库（x=2）
+	p2 ->> p3:5)后续查询将一直是旧值（x=1）!!!
+	
+```
+
+*先更新数据库*
+
+```mermaid
+sequenceDiagram
+	participant p1 as B
+	participant p2 as A
+	participant p3 as 缓存
+	participant p4 as 数据库
+	p1 ->> p4:1)将新数据存入库（x=2）
+	p2 ->> p3:2)查询缓存（x=1）
+	p1 ->> p3:3)清空缓存
+	p2 ->> p4:4)查询数据库（x=2）
+	p2 ->> p3:5)后续查询可以得到新值（x=2）
+```
+
+###### 实现代码
+
+```java
+class GenericDaoCached extends GenericDao {
+    private GenericDao dao = new GenericDao();
+    private Map<SqlPair, Object> map = new HashMap<>();
+    private ReentrantReadWriteLock rw = new ReentrantReadWriteLock();
+
+    @Override
+    public <T> List<T> queryList(Class<T> beanClass, String sql, Object... args) {
+        return dao.queryList(beanClass, sql, args);
+    }
+
+    @Override
+    public <T> T queryOne(Class<T> beanClass, String sql, Object... args) {
+        // 先从缓存中找，找到直接返回
+        SqlPair key = new SqlPair(sql, args);;
+        rw.readLock().lock();
+        try {
+            T value = (T) map.get(key);
+            if(value != null) {
+                return value;
+            }
+        } finally {
+            rw.readLock().unlock();
+        }
+        rw.writeLock().lock();
+        try {
+            // 多个线程
+            T value = (T) map.get(key);
+            if(value == null) {
+                // 缓存中没有，查询数据库
+                value = dao.queryOne(beanClass, sql, args);
+                map.put(key, value);
+            }
+            return value;
+        } finally {
+            rw.writeLock().unlock();
+        }
+    }
+
+    @Override
+    public int update(String sql, Object... args) {
+        rw.writeLock().lock();
+        try {
+            // 先更新库
+            int update = dao.update(sql, args);
+            // 清空缓存
+            map.clear();
+            return update;
+        } finally {
+            rw.writeLock().unlock();
+        }
+    }
+
+    class SqlPair {
+        private String sql;
+        private Object[] args;
+
+        public SqlPair(String sql, Object[] args) {
+            this.sql = sql;
+            this.args = args;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            SqlPair sqlPair = (SqlPair) o;
+            return Objects.equals(sql, sqlPair.sql) &&
+                    Arrays.equals(args, sqlPair.args);
+        }
+
+        @Override
+        public int hashCode() {
+            int result = Objects.hash(sql);
+            result = 31 * result + Arrays.hashCode(args);
+            return result;
+        }
+    }
+
+}
+```
+
+**注意事项**
+
+以上实现体现的是读写锁的应用，保证缓存和数据库的一致性，但还有下面问题没有考虑
+
+1. 适合读多写少，如果写操作比较频繁，以上实现性能低
+2. 没有考虑缓存容量
+3. 没有考虑缓存过期
+4. 只适合单机
+5. 并发性低
+6. 更新方法太过简单粗暴，将所有 key 都清空
+
+##### *<font color="#FF5151">原理——读写锁</font>
+
+读写锁用的是同一个 Sycn 同步器，因此等待队列、state 等也是同一个
+
+**t1 w.locK, t2 r.lock**
+
+1. t1 成功上锁， 流程与 ReentranLock 加锁相似，不同的是写锁状态占了 state 的低16位，读锁占了 state 高16位
+
+   ```java
+   public static class WriteLock implements Lock, java.io.Serializable {	
+   	public void lock() {
+           sync.acquire(1);
+       }	
+   }
+   
+   public abstract class AbstractQueuedSynchronizer
+       extends AbstractOwnableSynchronizer
+       implements java.io.Serializable {
+       
+       public final void acquire(int arg) {
+           if (!tryAcquire(arg) &&
+               acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+               selfInterrupt();
+       }
+   }
+   
+   abstract static class Sync extends AbstractQueuedSynchronizer {
+   	protected final boolean tryAcquire(int acquires) {
+               /*
+                * Walkthrough:
+                * 1. If read count nonzero or write count nonzero
+                *    and owner is a different thread, fail.
+                * 2. If count would saturate, fail. (This can only
+                *    happen if count is already nonzero.)
+                * 3. Otherwise, this thread is eligible for lock if
+                *    it is either a reentrant acquire or
+                *    queue policy allows it. If so, update state
+                *    and set owner.
+                */
+               Thread current = Thread.currentThread();
+               int c = getState();
+               int w = exclusiveCount(c);
+               if (c != 0) {
+                   // (Note: if c != 0 and w == 0 then shared count != 0)
+                   if (w == 0 || current != getExclusiveOwnerThread())
+                       return false;
+                   if (w + exclusiveCount(acquires) > MAX_COUNT)
+                       throw new Error("Maximum lock count exceeded");
+                   // Reentrant acquire
+                   setState(c + acquires);
+                   return true;
+               }
+               if (writerShouldBlock() ||
+                   !compareAndSetState(c, c + acquires))
+                   return false;
+               setExclusiveOwnerThread(current);
+               return true;
+           }
+   }
+   
+   // 非公平锁
+   final boolean writerShouldBlock() {
+       return false; // writers can always barge
+   }
+   
+   // 公平锁
+   final boolean writerShouldBlock() {
+       return hasQueuedPredecessors();
+   }
+   ```
+
+   ```mermaid
+   graph LR
+   	subgraph 读写锁 sync
+   		subgraph NonfairSync
+   			t1(state=0_1)
+   			t2(head)
+   			t3(tail)
+   			t4(exclusiveOwnerThread)
+   		end
+   	end
+   	t5(null)
+   	t6(t1)
+   	t2 ----> t5
+   	t3 ----> t5
+   	t4 ----> t6
+   	style NonfairSync fill:#66ff66
+   	style t6 fill:#ccf
+   	style t5 fill:#ffffff
+   ```
+
+2. t2 执行 r.lock 这时进入读锁的 sync.acquireShared() , 进入 tryAcquireShared 流程， 如果有写锁占有， 那么 tryAcquireShared 返回 -1 表示失败
+
+   1. -1 表示失败
+   2. 0  表示成功，但后继结点不会继续唤醒
+   3. 正数表示成功，数值表示还有几个后继结点需要唤醒，读写锁返回 1
+
+   ```java
+   public final void acquireShared(int arg) {
+       if (tryAcquireShared(arg) < 0)
+           doAcquireShared(arg);
+   }
+   
+   protected final int tryAcquireShared(int unused) {
+       /*
+        * Walkthrough:
+        * 1. If write lock held by another thread, fail.
+        * 2. Otherwise, this thread is eligible for
+        *    lock wrt state, so ask if it should block
+        *    because of queue policy. If not, try
+        *    to grant by CASing state and updating count.
+        *    Note that step does not check for reentrant
+        *    acquires, which is postponed to full version
+        *    to avoid having to check hold count in
+        *    the more typical non-reentrant case.
+        * 3. If step 2 fails either because thread
+        *    apparently not eligible or CAS fails or count
+        *    saturated, chain to version with full retry loop.
+        */
+       Thread current = Thread.currentThread();
+       int c = getState();
+       if (exclusiveCount(c) != 0 &&
+           getExclusiveOwnerThread() != current)
+           return -1;
+       int r = sharedCount(c);
+       if (!readerShouldBlock() &&
+           r < MAX_COUNT &&
+           compareAndSetState(c, c + SHARED_UNIT)) {
+           if (r == 0) {
+               firstReader = current;
+               firstReaderHoldCount = 1;
+           } else if (firstReader == current) {
+               firstReaderHoldCount++;
+           } else {
+               HoldCounter rh = cachedHoldCounter;
+               if (rh == null || rh.tid != getThreadId(current))
+                   cachedHoldCounter = rh = readHolds.get();
+               else if (rh.count == 0)
+                   readHolds.set(rh);
+               rh.count++;
+           }
+           return 1;
+       }
+       return fullTryAcquireShared(current);
+   }
+   ```
+
+   ```mermaid
+   graph LR
+   	subgraph 读写锁 sync
+   		subgraph NonfairSync
+   			t1(state=0_1)
+   			t2(head)
+   			t3(tail)
+   			t4(exclusiveOwnerThread)
+   		end
+   	end
+   	t5(null)
+   	t6(t1)
+   	t7(t2)
+   	t2 ----> t5
+   	t3 ----> t5
+   	t4 ----> t6
+   	t7 -..-> t1
+   	t7 -..-> t4
+   	style NonfairSync fill:#66ff66
+   	style t6 fill:#ccf
+   	style t7 fill:#ccf
+   	style t5 fill:#ffffff
+   ```
+
+   
+
+3. 这时会进入 sync.doAcquireShared 流程，首先调用 addWaiter 添加节点，不同之处在于节点被设置为 Node.SHARED 模式而不是 Node.EXCLUSIVE 模式，此时 t2 仍然处于活跃状态
+
+   ```java
+   private void doAcquireShared(int arg) {
+       final Node node = addWaiter(Node.SHARED);
+       boolean interrupted = false;
+       try {
+           for (;;) {
+               final Node p = node.predecessor();
+               if (p == head) {
+                   int r = tryAcquireShared(arg);
+                   if (r >= 0) {
+                       setHeadAndPropagate(node, r);
+                       p.next = null; // help GC
+                       return;
+                   }
+               }
+               if (shouldParkAfterFailedAcquire(p, node))
+                   interrupted |= parkAndCheckInterrupt();
+           }
+       } catch (Throwable t) {
+           cancelAcquire(node);
+           throw t;
+       } finally {
+           if (interrupted)
+               selfInterrupt();
+       }
+   }
+   ```
+
+   ```mermaid
+   graph LR
+   	subgraph 读写锁 sync
+   		subgraph NonfairSync
+   			t1(state=0_1)
+   			t2(head)
+   			t3(tail)
+   			t4(exclusiveOwnerThread)
+   		end
+   	end
+   	t5("waitState:0 Node#40;null#41;")
+   	t7("waitState:0 Node#40;t2#41;")
+   	t6(t1)
+   	t2 ----> t5
+   	t3 ----> t7
+   	t5 ----> t7
+   	t7 ----> t5
+   	t4 ----> t6
+   	style NonfairSync fill:#66ff66
+   	style t6 fill:#ccf
+   	style t7 fill:#ffb6c1
+   	style t5 fill:#ffb6c1
+   ```
+
+   
+
+4. t2 观察自身是否是第二个节点，是再次调用 tryAcquireShared(1) 尝试获取锁
+
+5. 如果没有成功，在 doAcquireShared 内 for(;;) 循环一次，把前驱节点 waitState 改为 -1，再 for(;;) 循环尝试一次 tryAcquireShared(1) 如果还不成功，那么在 parkAndCheckInterrupt() 处 park
+
+   ```mermaid
+   graph LR
+   	subgraph 读写锁 sync
+   		subgraph NonfairSync
+   			t1(state=0_1)
+   			t2(head)
+   			t3(tail)
+   			t4(exclusiveOwnerThread)
+   		end
+   	end
+   	t5("waitState:0 Node#40;null#41;")
+   	t7("waitState:0 Node#40;t2#41;")
+   	t6(t1)
+   	t2 ----> t5
+   	t3 ----> t7
+   	t5 ----> t7
+   	t7 ----> t5
+   	t4 ----> t6
+   	style NonfairSync fill:#66ff66
+   	style t6 fill:#ccf
+   	style t7 fill:#c0c0c0
+   	style t5 fill:#ffb6c1
+   ```
+
+   
+
+6. 1
+
+
+
