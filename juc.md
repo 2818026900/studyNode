@@ -4397,8 +4397,8 @@ class GenericDaoCached extends GenericDao {
    			t4(exclusiveOwnerThread)
    		end
    	end
-   	t5("waitState:0 Node#40;null#41;")
-   	t7("waitState:0 Node#40;t2#41;")
+   	t5("waitState:-1 Node#40;null#41;")
+   	t7("waitState:0 Node#40;t2#41; Shared")
    	t6(t1)
    	t2 ----> t5
    	t3 ----> t7
@@ -4408,12 +4408,1387 @@ class GenericDaoCached extends GenericDao {
    	style NonfairSync fill:#66ff66
    	style t6 fill:#ccf
    	style t7 fill:#c0c0c0
-   	style t5 fill:#ffb6c1
+   	style t5 fill:#99ffff
    ```
 
-   
+   **t3 r.lock, t4 w.lock**
 
-6. 1
+   假设又有 t3 加读锁和 t4 加写锁， 期间 t1 仍然持有锁
+
+   ```mermaid
+   graph TB
+   	subgraph 读写锁 sync
+   		subgraph NonfairSync
+   			t1(state=0_1)
+   			t2(head)
+   			t3(tail)
+   			t4(exclusiveOwnerThread)
+   		end
+   	end
+   	t5("waitState:-1 Node#40;null#41;")
+   	t7("waitState:-1 Node#40;t2#41; Shared")
+   	t8("waitState:-1 Node#40;t3#41; Shared")
+   	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+   	t6(t1)
+   	t2 ----> t5
+   	t3 ----> t9
+   	t5 ----> t7
+   	t7 ----> t5
+   	t7 ----> t8
+   	t8 ----> t7
+   	t8 ----> t9
+   	t9 ----> t8
+   	t4 ----> t6
+   	style NonfairSync fill:#66ff66
+   	style t6 fill:#ccf
+   	style t7 fill:#c0c0c0
+   	style t8 fill:#c0c0c0
+   	style t9 fill:#c0c0c0
+   	style t5 fill:#99ffff
+   ```
+
+   ****
+
+**t1 w.unlock**
+
+执行写锁的 sync.release(1) 流程， 调用 sync.tryRelease(1) 成功
+
+```java
+public final boolean release(int arg) {
+    if (tryRelease(arg)) {
+        Node h = head;
+        if (h != null && h.waitStatus != 0)
+            unparkSuccessor(h);
+        return true;
+    }
+    return false;
+}
+
+protected final boolean tryRelease(int releases) {
+    if (!isHeldExclusively())
+        throw new IllegalMonitorStateException();
+    int nextc = getState() - releases;
+    boolean free = exclusiveCount(nextc) == 0;
+    if (free)
+        setExclusiveOwnerThread(null);
+    setState(nextc);
+    return free;
+}
+```
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=0_1)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;t2#41; Shared")
+	t8("waitState:-1 Node#40;t3#41; Shared")
+	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+	t6(null)
+	t2 ----> t5
+	t3 ----> t9
+	t5 ----> t7
+	t7 ----> t5
+	t7 ----> t8
+	t8 ----> t7
+	t8 ----> t9
+	t9 ----> t8
+	t4 ----> t6
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ffffff
+	style t7 fill:#c0c0c0
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t5 fill:#99ffff
+```
+
+执行 sync. unparkSuccessor 使得 t2 线程恢复运行，这时 t2 在 doAcquireShared 内 parkAndCheckInterrupt 处恢复运行
+
+这回在来次 for(;;) 执行 tryAcquireShared 成功让读锁计数加1
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=1_0)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:-1 Node#40;null#41;")
+	t7("waitState:-1 Node#40;t2#41; Shared")
+	t8("waitState:-1 Node#40;t3#41; Shared")
+	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+	t6(null)
+	t2 ----> t5
+	t3 ----> t9
+	t5 ----> t7
+	t7 ----> t5
+	t7 ----> t8
+	t8 ----> t7
+	t8 ----> t9
+	t9 ----> t8
+	t4 ----> t6
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ffffff
+	style t7 fill:#c0c0c0
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t5 fill:#ffb6c1
+	style t7 fill:#ffb6c1
+```
+
+这时 t2 已经恢复运行，接下来 t2 调用 setHeadAndPropagate(node, 1), 它原本所在节点被设置为头结点
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=1_0)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:-1 Node#40;null#41;")
+	t7("t2")
+	t8("waitState:-1 Node#40;t3#41; Shared")
+	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+	t6(null)
+	t2 ----> t5
+	t3 ----> t9
+	t5 ----> t8
+	t8 ----> t5
+	t8 ----> t9
+	t9 ----> t8
+	t4 ----> t6
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ffffff
+	style t7 fill:#ffb6c1
+	style t8 fill:#c0c0c0
+	style t9 fill:#c0c0c0
+	style t5 fill:#ffb6c1
+```
+
+在 setHeadAndPropagate 方法内检查下一个节点是否是  Shared ， 如果是则调用 doReleaseShared 将 head 的状态从 -1 改为 0 ， 并唤醒下一个节点，这时 t3 在 doAcquireShared 内 parkAndCheckInterrupt 处恢复运行
+
+```java
+private void setHeadAndPropagate(Node node, int propagate) {
+    Node h = head; // Record old head for check below
+    setHead(node);
+    
+    if (propagate > 0 || h == null || h.waitStatus < 0 ||
+        (h = head) == null || h.waitStatus < 0) {
+        Node s = node.next;
+        if (s == null || s.isShared())
+            doReleaseShared();
+    }
+}
+```
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=1_0)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:0 Node#40;null#41;")
+	t7("t2")
+	t8("waitState:-1 Node#40;t3#41; Shared")
+	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+	t6(null)
+	t2 ----> t5
+	t3 ----> t9
+	t5 ----> t8
+	t8 ----> t5
+	t8 ----> t9
+	t9 ----> t8
+	t4 ----> t6
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ffffff
+	style t7 fill:#ffb6c1
+	style t8 fill:#ffb6c1
+	style t9 fill:#c0c0c0
+	style t5 fill:#ffb6c1
+```
+
+这回在来次 for(;;) 执行 tryAcquireShared 成功让读锁计数加1
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=2_0)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:0 Node#40;null#41;")
+	t7("t2")
+	t8("waitState:-1 Node#40;t3#41; Shared")
+	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+	t6(null)
+	t2 ----> t5
+	t3 ----> t9
+	t5 ----> t8
+	t8 ----> t5
+	t8 ----> t9
+	t9 ----> t8
+	t4 ----> t6
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ffffff
+	style t7 fill:#ffb6c1
+	style t8 fill:#ffb6c1
+	style t9 fill:#c0c0c0
+	style t5 fill:#ffb6c1
+```
+
+t3 恢复运行， t3 调用 setHeadAndPropagate(node, 1) ， 它原本所在节点被设置为头结点
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=2_0)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:-1 Node#40;null#41;")
+	t7("t2")
+	t8("t3")
+	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+	t6(null)
+	t2 ----> t5
+	t3 ----> t9
+	t5 ----> t9
+	t9 ----> t5
+	t4 ----> t6
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ffffff
+	style t7 fill:#ffb6c1
+	style t8 fill:#ffb6c1
+	style t9 fill:#c0c0c0
+	style t5 fill:#99ffff
+```
+
+下一个节点不是 Shared 因此不会继续唤醒 t4 节点
+
+**t2 r.unlock t3 r.unlock**
+
+t2 进入 sync.releaseShared(1) 中， 调用 tryReleaseShared(1) 让计数减一， 但由于计数还不为0
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=1_0)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:-1 Node#40;null#41;")
+	t7("t2")
+	t8("t3")
+	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+	t6(null)
+	t2 ----> t5
+	t3 ----> t9
+	t5 ----> t9
+	t9 ----> t5
+	t4 ----> t6
+	t7 -..-> t1
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ffffff
+	style t7 fill:#ccf
+	style t8 fill:#ffb6c1
+	style t9 fill:#c0c0c0
+	style t5 fill:#99ffff
+```
 
 
+
+t3 进入 sync.releaseShared(1) 中， 调用 tryReleaseShared(1) 让计数减一, 当计数为0时 进入 doReleaseShared() 将头结点从 -1 改为 0 并唤醒 下一节点
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=0_0)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:-1 Node#40;null#41;")
+	t7("t2")
+	t8("t3")
+	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+	t6(null)
+	t2 ----> t5
+	t3 ----> t9
+	t5 ----> t9
+	t9 ----> t5
+	t4 ----> t6
+	t7 -..-> t1
+	t8 -..-> t1
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ffffff
+	style t7 fill:#ccf
+	style t8 fill:#ccf
+	style t9 fill:#c0c0c0
+	style t5 fill:#99ffff
+```
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=0_0)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:0 Node#40;null#41;")
+	t9("waitState:0 Node#40;t4#41; EXCLUSIVE")
+	t6(null)
+	t2 ----> t5
+	t3 ----> t9
+	t5 ----> t9
+	t9 ----> t5
+	t4 ----> t6
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ffffff
+	style t9 fill:#ffb6c1
+	style t5 fill:#ffb6c1
+```
+
+t4 在 acquireQueued 内 parkAndCheckInterrupt 处恢复运行,再次 for(;;) 不存在竞争，tryAcquire(1) 成功，修改头结点，流程结束
+
+```mermaid
+graph TB
+	subgraph 读写锁 sync
+		subgraph NonfairSync
+			t1(state=0_1)
+			t2(head)
+			t3(tail)
+			t4(exclusiveOwnerThread)
+		end
+	end
+	t5("waitState:0 Node#40;null#41;")
+	t6(t4)
+	t2 ----> t5
+	t3 ----> t5
+	t4 ----> t6
+	style NonfairSync fill:#66ff66
+	style t6 fill:#ccf
+	style t5 fill:#99ffff
+```
+
+##### StampedLock
+
+JDK8引入，为进一步优化读性能，在使用读锁、写锁时都必须配合【戳】使用
+
+*加解读锁*
+
+```java
+long stamp = lock.readLock();
+lock.unlockRead(stamp);
+```
+
+*加解写锁*
+
+```java
+long stamp = lock.writeLock();
+lock.unlockWrite(stamp);
+```
+
+*乐观读*
+
+StampedLock 支持  tryOptimisticRead 方法，读取完毕后做一次 *戳校验* ， 如果通过，表示这期间确实没有写操作，数据可以安全使用，如果没有通过，需要重新获得读锁，保证数据安全
+
+```java
+long stamp = lock.tryOptimisticRead();
+// 校验
+if(!lock.validate(stamp)){
+    // 锁升级
+}
+```
+
+提供一个数据容器类 ，内部分别使用读锁保护数据的 read() 方法，写锁保护数据的 write() 方法
+
+```java
+@Slf4j(topic = "c.TestStampedLock")
+public class TestStampedLock {
+    public static void main(String[] args) {
+        DataContainerStamped dataContainer = new DataContainerStamped(1);
+        new Thread(() -> {
+            dataContainer.read(1);
+        }, "t1").start();
+        sleep(0.5);
+        new Thread(() -> {
+            dataContainer.read(0);
+        }, "t2").start();
+    }
+}
+
+@Slf4j(topic = "c.DataContainerStamped")
+class DataContainerStamped {
+    private int data;
+    private final StampedLock lock = new StampedLock();
+
+    public DataContainerStamped(int data) {
+        this.data = data;
+    }
+
+    public int read(int readTime) {
+        long stamp = lock.tryOptimisticRead();
+        log.debug("optimistic read locking...{}", stamp);
+        sleep(readTime);
+        if (lock.validate(stamp)) {
+            log.debug("read finish...{}, data:{}", stamp, data);
+            return data;
+        }
+        // 锁升级 - 读锁
+        log.debug("updating to read lock... {}", stamp);
+        try {
+            stamp = lock.readLock();
+            log.debug("read lock {}", stamp);
+            sleep(readTime);
+            log.debug("read finish...{}, data:{}", stamp, data);
+            return data;
+        } finally {
+            log.debug("read unlock {}", stamp);
+            lock.unlockRead(stamp);
+        }
+    }
+
+    public void write(int newData) {
+        long stamp = lock.writeLock();
+        log.debug("write lock {}", stamp);
+        try {
+            sleep(2);
+            this.data = newData;
+        } finally {
+            log.debug("write unlock {}", stamp);
+            lock.unlockWrite(stamp);
+        }
+    }
+}
+```
+
+- **注意**
+  - StampedLock 不支持条件变量
+  - StampedLock 不支持锁重入
+
+#### Semaphore
+
+信号量，用于限制能同时访问共享资源的线程上限
+
+```java
+@Slf4j(topic = "c.TestSemaphore")
+public class TestSemaphore {
+    public static void main(String[] args) {
+        // 1. 创建 semaphore 对象
+        Semaphore semaphore = new Semaphore(3);
+
+        // 2. 10个线程同时运行
+        for (int i = 0; i < 10; i++) {
+            new Thread(() -> {
+                try {
+                    semaphore.acquire();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                try {
+                    log.debug("running...");
+                    sleep(1);
+                    log.debug("end...");
+                } finally {
+                    semaphore.release();
+                }
+            }).start();
+        }
+    }
+}
+```
+
+##### 应用
+
+- 使用 Semaphore 限流，在访问高峰期时，让请求线程阻塞，高峰期过去再释放许可，只适合限制单机线程数量，并且仅是限制线程数，而不是限制资源数（例如连接数）
+- 用 Semaphore 实现简单连接池，对此【享元模式】下的实现（用wait notify）,性能和可读性显然更好，下面实现中线程数和数据库连接数是相等的
+
+```java
+public class TestPoolSemaphore {
+    public static void main(String[] args) {
+        Pool pool = new Pool(2);
+        for (int i = 0; i < 5; i++) {
+            new Thread(() -> {
+                Connection conn = pool.borrow();
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                pool.free(conn);
+            }).start();
+        }
+    }
+}
+
+@Slf4j(topic = "c.Pool")
+class Pool {
+    // 1. 连接池大小
+    private final int poolSize;
+
+    // 2. 连接对象数组
+    private Connection[] connections;
+
+    // 3. 连接状态数组 0 表示空闲， 1 表示繁忙
+    private AtomicIntegerArray states;
+
+    private Semaphore semaphore;
+
+    // 4. 构造方法初始化
+    public Pool(int poolSize) {
+        this.poolSize = poolSize;
+        // 让许可数与资源数一致
+        this.semaphore = new Semaphore(poolSize);
+        this.connections = new Connection[poolSize];
+        this.states = new AtomicIntegerArray(new int[poolSize]);
+        for (int i = 0; i < poolSize; i++) {
+            connections[i] = new MockConnection("连接" + (i+1));
+        }
+    }
+
+    // 5. 借连接
+    public Connection borrow() {// t1, t2, t3
+        // 获取许可
+        try {
+            semaphore.acquire(); // 没有许可的线程，在此等待
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        for (int i = 0; i < poolSize; i++) {
+            // 获取空闲连接
+            if(states.get(i) == 0) {
+                if (states.compareAndSet(i, 0, 1)) {
+                    log.debug("borrow {}", connections[i]);
+                    return connections[i];
+                }
+            }
+        }
+        // 不会执行到这里
+        return null;
+    }
+    // 6. 归还连接
+    public void free(Connection conn) {
+        for (int i = 0; i < poolSize; i++) {
+            if (connections[i] == conn) {
+                states.set(i, 0);
+                log.debug("free {}", conn);
+                semaphore.release();
+                break;
+            }
+        }
+    }
+}
+
+class MockConnection implements Connection {
+
+    private String name;
+
+    public MockConnection(String name) {
+        this.name = name;
+    }
+
+    @Override
+    public String toString() {
+        return "MockConnection{" +
+                "name='" + name + '\'' +
+                '}';
+    }
+
+    @Override
+    public Statement createStatement() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public CallableStatement prepareCall(String sql) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public String nativeSQL(String sql) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public void setAutoCommit(boolean autoCommit) throws SQLException {
+
+    }
+
+    @Override
+    public boolean getAutoCommit() throws SQLException {
+        return false;
+    }
+
+    @Override
+    public void commit() throws SQLException {
+
+    }
+
+    @Override
+    public void rollback() throws SQLException {
+
+    }
+
+    @Override
+    public void close() throws SQLException {
+
+    }
+
+    @Override
+    public boolean isClosed() throws SQLException {
+        return false;
+    }
+
+    @Override
+    public DatabaseMetaData getMetaData() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public void setReadOnly(boolean readOnly) throws SQLException {
+
+    }
+
+    @Override
+    public boolean isReadOnly() throws SQLException {
+        return false;
+    }
+
+    @Override
+    public void setCatalog(String catalog) throws SQLException {
+
+    }
+
+    @Override
+    public String getCatalog() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public void setTransactionIsolation(int level) throws SQLException {
+
+    }
+
+    @Override
+    public int getTransactionIsolation() throws SQLException {
+        return 0;
+    }
+
+    @Override
+    public SQLWarning getWarnings() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public void clearWarnings() throws SQLException {
+
+    }
+
+    @Override
+    public Statement createStatement(int resultSetType, int resultSetConcurrency) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public CallableStatement prepareCall(String sql, int resultSetType, int resultSetConcurrency) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public Map<String, Class<?>> getTypeMap() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public void setTypeMap(Map<String, Class<?>> map) throws SQLException {
+
+    }
+
+    @Override
+    public void setHoldability(int holdability) throws SQLException {
+
+    }
+
+    @Override
+    public int getHoldability() throws SQLException {
+        return 0;
+    }
+
+    @Override
+    public Savepoint setSavepoint() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public Savepoint setSavepoint(String name) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public void rollback(Savepoint savepoint) throws SQLException {
+
+    }
+
+    @Override
+    public void releaseSavepoint(Savepoint savepoint) throws SQLException {
+
+    }
+
+    @Override
+    public Statement createStatement(int resultSetType, int resultSetConcurrency, int resultSetHoldability) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency, int resultSetHoldability) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public CallableStatement prepareCall(String sql, int resultSetType, int resultSetConcurrency, int resultSetHoldability) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, int autoGeneratedKeys) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, int[] columnIndexes) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public PreparedStatement prepareStatement(String sql, String[] columnNames) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public Clob createClob() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public Blob createBlob() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public NClob createNClob() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public SQLXML createSQLXML() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public boolean isValid(int timeout) throws SQLException {
+        return false;
+    }
+
+    @Override
+    public void setClientInfo(String name, String value) throws SQLClientInfoException {
+
+    }
+
+    @Override
+    public void setClientInfo(Properties properties) throws SQLClientInfoException {
+
+    }
+
+    @Override
+    public String getClientInfo(String name) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public Properties getClientInfo() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public Array createArrayOf(String typeName, Object[] elements) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public Struct createStruct(String typeName, Object[] attributes) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public void setSchema(String schema) throws SQLException {
+
+    }
+
+    @Override
+    public String getSchema() throws SQLException {
+        return null;
+    }
+
+    @Override
+    public void abort(Executor executor) throws SQLException {
+
+    }
+
+    @Override
+    public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException {
+
+    }
+
+    @Override
+    public int getNetworkTimeout() throws SQLException {
+        return 0;
+    }
+
+    @Override
+    public <T> T unwrap(Class<T> iface) throws SQLException {
+        return null;
+    }
+
+    @Override
+    public boolean isWrapperFor(Class<?> iface) throws SQLException {
+        return false;
+    }
+}
+```
+
+##### *<font color="#FF5151">原理——Semaphore</font>
+
+Semaphore 有点像一个停车场，permits 就像停车位数量，当线程获得 permits 就像获得了停车位，然后停车场空余位置减一
+
+刚开始 permits（state） 为 3 ，这时 5 个线程来获取资源
+
+```java
+public Semaphore(int permits) {
+    sync = new NonfairSync(permits);
+}
+
+static final class NonfairSync extends Sync {
+    private static final long serialVersionUID = -2694183684443567898L;
+
+    NonfairSync(int permits) {
+        super(permits);
+    }
+
+    protected int tryAcquireShared(int acquires) {
+        return nonfairTryAcquireShared(acquires);
+    }
+}
+
+abstract static class Sync extends AbstractQueuedSynchronizer {
+    Sync(int permits) {
+        setState(permits);
+    }
+}
+```
+
+```mermaid
+graph LR
+	subgraph 信号量
+		subgraph NonfairSync
+			s(state = 3)
+			h(head)
+			t(tail)
+		end
+	end
+	t0(thread-0)
+	t1(thread-1)
+	t2(thread-2)
+	t3(thread-3)
+	t4(thread-4)
+	t0 ----> s
+	t1 ----> s
+	t2 ----> s
+	t3 ----> s
+	t4 ----> s
+	style 信号量 fill:#ffff99
+	style NonfairSync fill:#ccffff
+	style s fill:#99cc66
+	style h fill:#99cc66
+	style t fill:#99cc66
+	style t0 fill:#99ccff
+	style t1 fill:#99ccff
+	style t2 fill:#99ccff
+	style t3 fill:#99ccff
+	style t4 fill:#99ccff
+```
+
+假设其中 Thread-1 ,Thread-2,Thread-0 竞争成功，而 Thread-0 和 Thread-3 竞争失败，进入 AQS 队列 park 阻塞
+
+```java
+public void acquire() throws InterruptedException {
+    sync.acquireSharedInterruptibly(1);
+}
+
+public final void acquireSharedInterruptibly(int arg)
+    throws InterruptedException {
+    if (Thread.interrupted())
+        throw new InterruptedException();
+    if (tryAcquireShared(arg) < 0)
+        doAcquireSharedInterruptibly(arg);
+}
+
+// 开始竞争
+protected int tryAcquireShared(int acquires) {
+    return nonfairTryAcquireShared(acquires);
+}
+
+final int nonfairTryAcquireShared(int acquires) {
+    for (;;) {
+        int available = getState();
+        int remaining = available - acquires;
+        if (remaining < 0 ||
+            compareAndSetState(available, remaining))
+            return remaining;
+    }
+}
+
+// 返回值小于0竞争失败
+private void doAcquireSharedInterruptibly(int arg)
+    throws InterruptedException {
+    final Node node = addWaiter(Node.SHARED);
+    try {
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head) {
+                int r = tryAcquireShared(arg);
+                if (r >= 0) {
+                    setHeadAndPropagate(node, r);
+                    p.next = null; // help GC
+                    return;
+                }
+            }
+            if (shouldParkAfterFailedAcquire(p, node) &&
+                parkAndCheckInterrupt())
+                throw new InterruptedException();
+        }
+    } catch (Throwable t) {
+        cancelAcquire(node);
+        throw t;
+    }
+}
+```
+
+```mermaid
+graph TB
+	subgraph 信号量
+		subgraph NonfairSync
+			s(state = 0)
+			h(head)
+			t(tail)
+		end
+	end
+	t0("waitState:-1 Node#40;thread-0#41;")
+	t1(thread-1)
+	t2(thread-2)
+	t3("waitState:0 Node#40;thread-3#41;"thread-3)
+	t4(thread-4)
+	n("waitState:-1 Node#40;null#41;")
+	h ----> n
+	n ----> t0
+	t0 ----> n
+	t0 ----> t3
+	t3 ----> t0
+	t ----> t3
+	style 信号量 fill:#ffff99
+	style NonfairSync fill:#ccffff
+	style s fill:#99cc66
+	style h fill:#99cc66
+	style t fill:#99cc66
+	style t0 fill:#c0c0c0
+	style t1 fill:#99ccff
+	style t2 fill:#99ccff
+	style t3 fill:#c0c0c0
+	style t4 fill:#99ccff
+	style n fill:#ffb6c1
+```
+
+这时 Thread-4 释放了 permits
+
+```java
+public void release() {
+    sync.releaseShared(1);
+}
+ 
+public final boolean releaseShared(int arg) {
+    if (tryReleaseShared(arg)) {
+        doReleaseShared();
+        return true;
+    }
+    return false;
+}
+
+protected final boolean tryReleaseShared(int releases) {
+    for (;;) {
+        int current = getState();
+        int next = current + releases;
+        if (next < current) // overflow
+            throw new Error("Maximum permit count exceeded");
+        if (compareAndSetState(current, next))
+            return true;
+    }
+}
+
+private void doReleaseShared() {
+    /*
+         * Ensure that a release propagates, even if there are other
+         * in-progress acquires/releases.  This proceeds in the usual
+         * way of trying to unparkSuccessor of head if it needs
+         * signal. But if it does not, status is set to PROPAGATE to
+         * ensure that upon release, propagation continues.
+         * Additionally, we must loop in case a new node is added
+         * while we are doing this. Also, unlike other uses of
+         * unparkSuccessor, we need to know if CAS to reset status
+         * fails, if so rechecking.
+         */
+    for (;;) {
+        Node h = head;
+        if (h != null && h != tail) {
+            int ws = h.waitStatus;
+            if (ws == Node.SIGNAL) {
+                if (!h.compareAndSetWaitStatus(Node.SIGNAL, 0))
+                    continue;            // loop to recheck cases
+                unparkSuccessor(h);
+            }
+            else if (ws == 0 &&
+                     !h.compareAndSetWaitStatus(0, Node.PROPAGATE))
+                continue;                // loop on failed CAS
+        }
+        if (h == head)                   // loop if head changed
+            break;
+    }
+}
+```
+
+
+
+```mermaid
+graph TB
+	subgraph 信号量
+		subgraph NonfairSync
+			s(state = 1)
+			h(head)
+			t(tail)
+		end
+	end
+	t0("waitState:-1 Node#40;thread-0#41;")
+	t1(thread-1)
+	t2(thread-2)
+	t3("waitState:0 Node#40;thread-3#41;"thread-3)
+	t4(thread-4)
+	n("waitState:-1 Node#40;null#41;")
+	t4 -..-> s
+	h ----> n
+	n ----> t0
+	t0 ----> n
+	t0 ----> t3
+	t3 ----> t0
+	t ----> t3
+	style 信号量 fill:#ffff99
+	style NonfairSync fill:#ccffff
+	style s fill:#99cc66
+	style h fill:#99cc66
+	style t fill:#99cc66
+	style t0 fill:#c0c0c0
+	style t1 fill:#99ccff
+	style t2 fill:#99ccff
+	style t3 fill:#c0c0c0
+	style t4 fill:#99ccff
+	style n fill:#99ffff
+```
+
+Thread-0 竞争成功， permits 再次设置为 0 ，设置自己的 head 节点， 断开原来的 head 节点， unpark 接下来的 Thread-3 节点，但由于 permits 是 0, 因此 Thread-3 在尝试不成功后再次进入 park 状态
+
+```mermaid
+graph TB
+	subgraph 信号量
+		subgraph NonfairSync
+			s(state = 0)
+			h(head)
+			t(tail)
+		end
+	end
+	t0(thread-0)
+	t1(thread-1)
+	t2(thread-2)
+	t3("waitState:0 Node#40;thread-3#41;"thread-3)
+	t4(thread-4)
+	n("waitState:-1 Node#40;null#41;")
+	h ----> n
+	n ----> t3
+	t3 ----> n
+	t ----> t3
+	style 信号量 fill:#ffff99
+	style NonfairSync fill:#ccffff
+	style s fill:#99cc66
+	style h fill:#99cc66
+	style t fill:#99cc66
+	style t0 fill:#99ccff
+	style t1 fill:#99ccff
+	style t2 fill:#99ccff
+	style t3 fill:#c0c0c0
+	style t4 fill:#99ccff,stroke-width:2px,color:#ff6600,stroke-dasharray: 5 5
+	style n fill:#99ffff
+```
+
+#### CountdownLatch
+
+用来进行线程同步协作，等待所有线程完成倒计时
+
+其中构造参数用来初始化等待计数值， await() 用来等待计数归零, countDown() 用来让计数减一
+
+```java
+private static final class Sync extends AbstractQueuedSynchronizer {
+    private static final long serialVersionUID = 4982264981922014374L;
+
+    Sync(int count) {
+        setState(count);
+    }
+
+    int getCount() {
+        return getState();
+    }
+
+    protected int tryAcquireShared(int acquires) {
+        return (getState() == 0) ? 1 : -1;
+    }
+
+    protected boolean tryReleaseShared(int releases) {
+        // Decrement count; signal when transition to zero
+        for (;;) {
+            int c = getState();
+            if (c == 0)
+                return false;
+            int nextc = c-1;
+            if (compareAndSetState(c, nextc))
+                return nextc == 0;
+        }
+    }
+}
+```
+
+###### 使用
+
+```java
+// 基本使用
+private static void test1() throws InterruptedException {
+    CountDownLatch latch = new CountDownLatch(3);
+
+    new Thread(() -> {
+        log.debug("begin...");
+        sleep(1);
+        latch.countDown();
+        log.debug("end...{}", latch.getCount());
+    }).start();
+
+    new Thread(() -> {
+        log.debug("begin...");
+        sleep(2);
+        latch.countDown();
+        log.debug("end...{}", latch.getCount());
+    }).start();
+
+    new Thread(() -> {
+        log.debug("begin...");
+        sleep(1.5);
+        latch.countDown();
+        log.debug("end...{}", latch.getCount());
+    }).start();
+
+    log.debug("waiting...");
+    latch.await();
+    log.debug("wait end...");
+}
+
+// 配合线程池使用
+private static void test2() {
+    CountDownLatch latch = new CountDownLatch(3);
+    ExecutorService service = Executors.newFixedThreadPool(4);
+    service.submit(() -> {
+        log.debug("begin...");
+        sleep(1);
+        latch.countDown();
+        log.debug("end...{}", latch.getCount());
+    });
+    service.submit(() -> {
+        log.debug("begin...");
+        sleep(1.5);
+        latch.countDown();
+        log.debug("end...{}", latch.getCount());
+    });
+    service.submit(() -> {
+        log.debug("begin...");
+        sleep(2);
+        latch.countDown();
+        log.debug("end...{}", latch.getCount());
+    });
+    service.submit(()->{
+        try {
+            log.debug("waiting...");
+            latch.await();
+            log.debug("wait end...");
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    });
+}
+```
+
+###### 应用
+
+模拟多游戏同步加载过程
+
+```java
+private static void test3() throws InterruptedException {
+        AtomicInteger num = new AtomicInteger(0);
+        ExecutorService service = Executors.newFixedThreadPool(10, (r) -> {
+            return new Thread(r, "t" + num.getAndIncrement());
+        });
+        CountDownLatch latch = new CountDownLatch(10);
+        String[] all = new String[10];
+        Random r = new Random();
+        for (int j = 0; j < 10; j++) {
+            int x = j;
+            service.submit(() -> {
+                for (int i = 0; i <= 100; i++) {
+                    try {
+                        Thread.sleep(r.nextInt(100));
+                    } catch (InterruptedException e) {
+                    }
+                    all[x] = Thread.currentThread().getName() + "(" + (i + "%") + ")";
+                    System.out.print("\r" + Arrays.toString(all));
+                }
+                latch.countDown();
+            });
+        }
+        latch.await();
+        System.out.println("\n游戏开始...");
+        service.shutdown();
+    }
+}
+```
+
+同步等待多个远程调用结束
+
+```java
+private static void test4() throws InterruptedException, ExecutionException {
+    RestTemplate restTemplate = new RestTemplate();
+    log.debug("begin");
+    ExecutorService service = Executors.newCachedThreadPool();
+    CountDownLatch latch = new CountDownLatch(4);
+    Future<Map<String,Object>> f1 = service.submit(() -> {
+        Map<String, Object> response = restTemplate.getForObject("http://localhost:8080/order/{1}", Map.class, 1);
+        return response;
+    });
+    Future<Map<String, Object>> f2 = service.submit(() -> {
+        Map<String, Object> response1 = restTemplate.getForObject("http://localhost:8080/product/{1}", Map.class, 1);
+        return response1;
+    });
+    Future<Map<String, Object>> f3 = service.submit(() -> {
+        Map<String, Object> response1 = restTemplate.getForObject("http://localhost:8080/product/{1}", Map.class, 2);
+        return response1;
+    });
+    Future<Map<String, Object>> f4 = service.submit(() -> {
+        Map<String, Object> response3 = restTemplate.getForObject("http://localhost:8080/logistics/{1}", Map.class, 1);
+        return response3;
+    });
+
+    System.out.println(f1.get());
+    System.out.println(f2.get());
+    System.out.println(f3.get());
+    System.out.println(f4.get());
+    log.debug("执行完毕");
+    service.shutdown();
+}
+
+// 服务
+@RestController
+public class TestCountDownlatchController {
+
+    @GetMapping("/order/{id}")
+    public Map<String, Object> order(@PathVariable int id) {
+        HashMap<String, Object> map = new HashMap<>();
+        map.put("id", id);
+        map.put("total", "2300.00");
+        sleep(2000);
+        return map;
+    }
+
+    @GetMapping("/product/{id}")
+    public Map<String, Object> product(@PathVariable int id) {
+        HashMap<String, Object> map = new HashMap<>();
+        if (id == 1) {
+            map.put("name", "小爱音箱");
+            map.put("price", 300);
+        } else if (id == 2) {
+            map.put("name", "小米手机");
+            map.put("price", 2000);
+        }
+        map.put("id", id);
+        sleep(1000);
+        return map;
+    }
+
+    @GetMapping("/logistics/{id}")
+    public Map<String, Object> logistics(@PathVariable int id) {
+        HashMap<String, Object> map = new HashMap<>();
+        map.put("id", id);
+        map.put("name", "中通快递");
+        sleep(2500);
+        return map;
+    }
+
+    private void sleep(int millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
 
