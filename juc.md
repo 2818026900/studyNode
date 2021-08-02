@@ -1,5 +1,3 @@
-
-
 # JUC
 
 ## 进程与线程
@@ -5792,3 +5790,108 @@ public class TestCountDownlatchController {
 }
 ```
 
+#### CyclicBarrier
+
+##### 问题
+
+```java
+// CountDownLatch 不能进行重用
+private static void test1() {
+    ExecutorService service = Executors.newFixedThreadPool(5);
+    for (int i = 0; i < 3; i++) {
+        CountDownLatch latch = new CountDownLatch(2);
+        service.submit(() -> {
+            log.debug("task1 start...");
+            sleep(1);
+            latch.countDown();
+        });
+        service.submit(() -> {
+            log.debug("task2 start...");
+            sleep(2);
+            latch.countDown();
+        });
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        log.debug("task1 task2 finish...");
+    }
+    service.shutdown();
+}
+```
+
+##### 使用
+
+```java
+public static void main(String[] args) {
+    ExecutorService service = Executors.newFixedThreadPool(3);
+    CyclicBarrier barrier = new CyclicBarrier(2, ()-> {
+        log.debug("task1, task2 finish...");
+    });
+    for (int i = 0; i < 3; i++) { // task1  task2  task1
+        service.submit(() -> {
+            log.debug("task1 begin...");
+            sleep(1);
+            try {
+                barrier.await(); // 2-1=1
+            } catch (InterruptedException | BrokenBarrierException e) {
+                e.printStackTrace();
+            }
+        });
+        service.submit(() -> {
+            log.debug("task2 begin...");
+            sleep(2);
+            try {
+                barrier.await(); // 1-1=0
+            } catch (InterruptedException | BrokenBarrierException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+    service.shutdown();
+
+}
+```
+
+##### 注意
+
+nThread =  parties 则效果正常
+
+#### 线程安全集合类
+
+```mermaid
+graph TB
+	subgraph 图3
+		t7(JUC安全集合)
+         t8(Blocking类)
+         t9(CopyOnWrite类)
+         t10(Concurrent类)
+         t7 ----> t8
+         t7 ----> t9
+         t7 ----> t10
+	end
+	subgraph 图2
+		t4(修饰的安全集合)
+         t5(SynchronizedMap)
+         t6(SynchronizedList)
+         t4 --使用Collections的方法修饰--> t5
+         t4 --使用Collections的方法修饰--> t6
+	end
+	subgraph 图1
+		t1(遗留的线程安全类)
+         t2(HashTable)
+         t3(Vector)
+         t1 ----> t2
+         t1 ----> t3
+	end
+	style 图1 fill:#ffff99
+	style 图2 fill:#ffff99
+	style 图3 fill:#ffff99
+```
+
+
+
+![image-20210802201957103](juc.assets/image-20210802201957103.png) 
+
+![image-20210802202210786](juc.assets/image-20210802202210786.png) 
