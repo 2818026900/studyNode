@@ -5895,3 +5895,390 @@ graph TB
 ![image-20210802201957103](juc.assets/image-20210802201957103.png) 
 
 ![image-20210802202210786](juc.assets/image-20210802202210786.png) 
+
+##### ConcurrentHashMap
+
+###### 使用——单词计数
+
+```java
+private static <V> void demo(Supplier<Map<String, V>> supplier, BiConsumer<Map<String, V>, List<String>> consumer) {
+    Map<String, V> counterMap = supplier.get();
+    // key value
+    // a   200
+    // b   200
+    List<Thread> ts = new ArrayList<>();
+    for (int i = 1; i <= 26; i++) {
+        int idx = i;
+        Thread thread = new Thread(() -> {
+            List<String> words = readFromFile(idx);
+            consumer.accept(counterMap, words);
+        });
+        ts.add(thread);
+    }
+
+    ts.forEach(t -> t.start());
+    ts.forEach(t -> {
+        try {
+            t.join();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    });
+
+    System.out.println(counterMap);
+}
+
+public static void main(String[] args) {
+    demo(
+        // 创建 map 集合
+        // 创建 ConcurrentHashMap 对不对？
+        () -> new ConcurrentHashMap<String, LongAdder>(8,0.75f,8),
+
+        (map, words) -> {
+            for (String word : words) {
+
+                // 如果缺少一个 key，则计算生成一个 value , 然后将  key value 放入 map
+                //                  a      0
+                LongAdder value = map.computeIfAbsent(word, (key) -> new LongAdder());
+                // 执行累加
+                value.increment(); // 2
+
+                /*// 检查 key 有没有 多个原子操作组合不一定是原子操作
+                        Integer counter = map.get(word);
+                        int newValue = counter == null ? 1 : counter + 1;
+                        // 没有 则 put
+                        map.put(word, newValue);*/
+            }
+        }
+    );
+```
+
+###### 原理
+
+**jdk 1.7 HashMap 并发死链**
+
+![image-20210803093723157](juc.assets/image-20210803093723157.png) 
+
+**jdk 8**
+
+![image-20210803093928184](juc.assets/image-20210803093928184.png) 
+
+jdk7 头插法，jdk8 尾插法
+
+当阈值达到原长度3/4 进行2倍扩容
+
+![image-20210803110125932](juc.assets/image-20210803110125932.png) 
+
+jdk7在高并发情况下扩容可能会出现并发死链
+
+```java
+public class TestDeadLink {
+    public static void main(String[] args) {
+        // 测试 java 7 中哪些数字的 hash 结果相等
+        System.out.println("长度为16时，桶下标为1的key");
+        for (int i = 0; i < 64; i++) {
+            if (hash(i) % 16 == 1) {
+                System.out.println(i);
+            }
+        }
+        System.out.println("长度为32时，桶下标为1的key");
+        for (int i = 0; i < 64; i++) {
+            if (hash(i) % 32 == 1) {
+                System.out.println(i);
+            }
+        }
+        // 1, 35, 16, 50 当大小为16时，它们在一个桶内
+        final HashMap<Integer, Integer> map = new HashMap<Integer, Integer>();
+        // 放 12 个元素
+        map.put(2, null);
+        map.put(3, null);
+        map.put(4, null);
+        map.put(5, null);
+        map.put(6, null);
+        map.put(7, null);
+        map.put(8, null);
+        map.put(9, null);
+        map.put(10, null);
+        map.put(16, null);
+        map.put(35, null);
+        map.put(1, null);
+
+        System.out.println("扩容前大小[main]:"+map.size());
+        new Thread() {
+            @Override
+            public void run() {
+                // 放第 13 个元素, 发生扩容
+                map.put(50, null);
+                System.out.println("扩容后大小[Thread-0]:"+map.size());
+            }
+        }.start();
+        new Thread() {
+            @Override
+            public void run() {
+                // 放第 13 个元素, 发生扩容
+                map.put(50, null);
+                System.out.println("扩容后大小[Thread-1]:"+map.size());
+            }
+        }.start();
+    }
+
+    final static int hash(Object k) {
+        int h = 0;
+        if (0 != h && k instanceof String) {
+            return sun.misc.Hashing.stringHash32((String) k);
+        }
+        h ^= k.hashCode();
+        h ^= (h >>> 20) ^ (h >>> 12);
+        return h ^ (h >>> 7) ^ (h >>> 4);
+    }
+}
+```
+
+![image-20210803163354846](juc.assets/image-20210803163354846.png)![image-20210803163624270](juc.assets/image-20210803163624270.png) ![image-20210803163912536](juc.assets/image-20210803163912536.png) ![image-20210803164220231](juc.assets/image-20210803164220231.png) 
+
+![image-20210803164910405](juc.assets/image-20210803164910405.png) ![image-20210803165017641](juc.assets/image-20210803165017641.png) ![image-20210803165103458](juc.assets/image-20210803165103458.png)![image-20210803165242294](juc.assets/image-20210803165242294.png)
+
+**jdk8 ConcurrentHashMap 原理**
+
+*重要属性和内部类*
+
+![image-20210803194703165](juc.assets/image-20210803194703165.png) 
+
+*重要方法*
+
+![image-20210803194839960](juc.assets/image-20210803194839960.png) 
+
+*构造方法分析*
+
+![image-20210803195207257](juc.assets/image-20210803195207257.png) 
+
+*get流程*
+
+![image-20210803202641670](juc.assets/image-20210803202641670.png) 
+
+*put流程*
+
+数组（table），链表（bin）
+
+![image-20210803205758671](juc.assets/image-20210803205758671.png) ![image-20210803205903067](juc.assets/image-20210803205903067.png) ![image-20210803210034077](juc.assets/image-20210803210034077.png) ![image-20210803210242237](juc.assets/image-20210803210242237.png) ![image-20210803210503700](juc.assets/image-20210803210503700.png) ![image-20210803210821590](juc.assets/image-20210803210821590.png)![image-20210803211346868](juc.assets/image-20210803211346868.png)![image-20210803211938798](juc.assets/image-20210803211938798.png)
+
+*size计算流程*
+
+![image-20210803212521986](juc.assets/image-20210803212521986.png)![image-20210803212607143](juc.assets/image-20210803212607143.png)  
+
+**jdk7 ConcurrentHashMap 原理**
+
+![image-20210803213053250](juc.assets/image-20210803213053250.png) 
+
+*构造器分析*
+
+![image-20210803213332669](juc.assets/image-20210803213332669.png) ![image-20210803213656647](juc.assets/image-20210803213656647.png) ![image-20210804074520478](juc.assets/image-20210804074520478.png)
+
+*put流程*
+
+![image-20210804075041229](juc.assets/image-20210804075041229.png) 
+
+segment继承了ReentrantLock 它的put方法
+
+![image-20210804075407032](juc.assets/image-20210804075407032.png) ![image-20210804075802168](juc.assets/image-20210804075802168.png)![image-20210804075919512](juc.assets/image-20210804075919512.png)
+
+*rehash 流程*
+
+![image-20210804080737514](juc.assets/image-20210804080737514.png) ![image-20210804080809924](juc.assets/image-20210804080809924.png)
+
+*get流程*
+
+![image-20210804081032701](juc.assets/image-20210804081032701.png) 
+
+*size计算流程*
+
+![image-20210804081250867](juc.assets/image-20210804081250867.png) ![image-20210804081333005](juc.assets/image-20210804081333005.png)
+
+##### LinkedBlockingQueue原理
+
+###### 基本入队出队
+
+![image-20210804173041157](juc.assets/image-20210804173041157.png)![image-20210804173215111](juc.assets/image-20210804173215111.png) ![image-20210804173242850](juc.assets/image-20210804173242850.png)  
+
+*出队*
+
+![image-20210804173406946](juc.assets/image-20210804173406946.png) ![image-20210804173507776](juc.assets/image-20210804173507776.png) ![image-20210804173626158](juc.assets/image-20210804173626158.png)![image-20210804173708574](juc.assets/image-20210804173708574.png)![image-20210804173737759](juc.assets/image-20210804173737759.png)  
+
+###### 加锁分析
+
+==高明之处==在于用了两把锁和 dummy 节点
+
+- 用一把锁，同一时刻，最多只允许有一个线程（生产者或消费者，二选一）执行
+- 用两把锁，同一时刻，可以允许两个线程同时（一个生产者与一个消费者）执行
+  - 消费者与消费者线程仍然串行
+  - 生产者与生产者线程仍然串行
+
+线程安全分析
+
+- 当节点总数大于 2 时（包括 dummy 节点），putLock 保证的是 last 节点的线程安全，takeLock 保证的是 head 节点的线程安全。两把锁保证了入队和出队没有竞争
+- 当节点总数等于 2 时（即一个 dummy 节点，一个正常节点）这时候，仍然是两把锁锁两个对象，不会竞争
+- 当节点总数等于 1 时（就一个 dummy 节点）这时 take 线程会被 notEmpty 条件阻塞，有竞争，会阻塞
+
+*put 操作*
+
+```java
+public void put(E e) throws InterruptedException {
+    if (e == null) throw new NullPointerException();
+    int c = -1;
+    Node<E> node = new Node<E>(e);
+    final ReentrantLock putLock = this.putLock;
+    // count 用来维护元素计数
+    final AtomicInteger count = this.count;
+    putLock.lockInterruptibly();
+    try {
+        // 满了等待
+        while (count.get() == capacity) {
+            // 倒过来读就好: 等待 notFull
+            notFull.await();
+        }
+        // 有空位, 入队且计数加一
+        enqueue(node);
+        c = count.getAndIncrement(); 
+        // 除了自己 put 以外, 队列还有空位, 由自己叫醒其他 put 线程
+        if (c + 1 < capacity)
+            notFull.signal();
+    } finally {
+        putLock.unlock();
+    }
+    // 如果队列中有一个元素, 叫醒 take 线程
+    if (c == 0)
+        // 这里调用的是 notEmpty.signal() 而不是 notEmpty.signalAll() 是为了减少竞争
+        signalNotEmpty();
+}
+```
+
+*take操作*
+
+```java
+public E take() throws InterruptedException {
+    E x;
+    int c = -1;
+    final AtomicInteger count = this.count;
+    final ReentrantLock takeLock = this.takeLock;
+    takeLock.lockInterruptibly();
+    try {
+        while (count.get() == 0) {
+            notEmpty.await();
+        }
+        x = dequeue();
+        c = count.getAndDecrement();
+        if (c > 1)
+            notEmpty.signal();
+    } finally {
+        takeLock.unlock();
+    }
+    // 如果队列中只有一个空位时, 叫醒 put 线程
+    // 如果有多个线程进行出队, 第一个线程满足 c == capacity, 但后续线程 c < capacity
+    if (c == capacity)
+        // 这里调用的是 notFull.signal() 而不是 notFull.signalAll() 是为了减少竞争
+        signalNotFull()
+    return x;
+}
+```
+
+由 put 唤醒 put 是为了避免信号不足
+
+###### 性能比较
+
+主要列举 LinkedBlockingQueue 与 ArrayBlockingQueue 的性能比较
+
+- Linked 支持有界，Array 强制有界
+- Linked 实现是链表，Array 实现是数组
+- Linked 是懒惰的，而 Array 需要提前初始化 Node 数组
+- Linked 每次入队会生成新 Node，而 Array 的 Node 是提前创建好的
+- Linked 两把锁，Array 一把锁
+
+##### ConcurrentLinkedQueue 原理
+
+ConcurrentLinkedQueue 的设计与 LinkedBlockingQueue 非常像，也是
+
+- 两把【锁】，同一时刻，可以允许两个线程同时（一个生产者与一个消费者）执行
+- dummy 节点的引入让两把【锁】将来锁住的是不同对象，避免竞争
+- 只是这【锁】使用了 cas 来实现
+
+事实上，ConcurrentLinkedQueue 应用还是非常广泛的
+
+例如之前讲的 Tomcat 的 Connector 结构时，Acceptor 作为生产者向 Poller 消费者传递事件信息时，正是采用了
+
+ConcurrentLinkedQueue 将 SocketChannel 给 Poller 使用
+
+##### CopyOnWriteArrayList
+
+CopyOnWriteArraySet 是它的马甲 底层实现采用了 写入时拷贝 的思想，增删改操作会将底层数组拷贝一份，更改操作在新数组上执行，这时不影响其它线程的**并发读**，**读写分离**。 
+
+以新增为例：
+
+```java
+public boolean add(E e) {
+    synchronized (lock) {
+        // 获取旧的数组
+        Object[] es = getArray();
+        int len = es.length;
+        // 拷贝新的数组（这里是比较耗时的操作，但不影响其它读线程）
+        es = Arrays.copyOf(es, len + 1);
+        // 添加新元素
+        es[len] = e;
+        // 替换旧的数组
+        setArray(es);
+        return true;
+    }
+}
+```
+
+这里的源码版本是 Java 11，在 Java 1.8 中使用的是可重入锁而不是 synchronized
+
+其它读操作并未加锁，例如：
+
+```java
+public void forEach(Consumer<? super E> action) {
+    Objects.requireNonNull(action);
+    for (Object x : getArray()) {
+        @SuppressWarnings("unchecked") E e = (E) x;
+        action.accept(e);
+    }
+}
+```
+
+适合『读多写少』的应用场景
+
+###### get 弱一致性
+
+![image-20210804214412730](juc.assets/image-20210804214412730.png) 
+
+| **时间点** | **操作**                     |
+| ---------- | ---------------------------- |
+| 1          | Thread-0 getArray()          |
+| 2          | Thread-1 getArray()          |
+| 3          | Thread-1 setArray(arrayCopy) |
+| 4          | Thread-0 array[index]        |
+
+不容易测试，但问题确实存在
+
+###### 迭代器弱一致性
+
+```java
+CopyOnWriteArrayList<Integer> list = new CopyOnWriteArrayList<>();
+list.add(1);
+list.add(2);
+list.add(3);
+Iterator<Integer> iter = list.iterator();
+new Thread(() -> {
+    list.remove(0);
+    System.out.println(list);
+}).start();
+sleep1s();
+while (iter.hasNext()) {
+    System.out.println(iter.next());
+}
+```
+
+不要觉得弱一致性就不好
+
+- 数据库的 MVCC 都是弱一致性的表现
+- 并发高和一致性是矛盾的，需要权衡
+
